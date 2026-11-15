@@ -77,7 +77,7 @@ struct SignInView: View {
                     FeatureRow(systemImage: "checklist", title: "Shopping lists",
                                detail: "Tick what you already have; add only what you need.")
                 }
-                Text("Recipe Book is invite-only. After signing in, the app administrator needs to grant your account access. Joining a shared book is a separate step done by its owners.")
+                Text("Sign in with your Google account. Recipe Book is invite-only: after signing in, the app administrator needs to grant your account access. Joining a shared book is a separate step done by its owners.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -86,7 +86,8 @@ struct SignInView: View {
             .frame(maxWidth: .infinity)
         }
         .bottomControlBar {
-            RunningButton(title: "Sign In", isRunning: runner.isRunning) {
+            // Text-only label: no Google logo asset is bundled in this module.
+            RunningButton(title: "Continue with Google", isRunning: runner.isRunning) {
                 runner.run { onChange(try await service.signIn()) }
             }
             .floatingPrimaryButtonStyle()

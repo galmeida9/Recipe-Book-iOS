@@ -8,7 +8,8 @@ import Foundation
 public protocol RecipeBookService: Sendable {
     // MARK: Session & access
     func loadSession() async throws -> SessionState
-    /// Starts the hosted OIDC sign-in owned by the app layer and returns the resulting state.
+    /// Starts the hosted OIDC sign-in owned by the app layer (Google is the only customer sign-in
+    /// option) and returns the resulting state. Missing configuration must throw, never succeed.
     func signIn() async throws -> SessionState
     func completeSetup(displayName: String) async throws -> SessionState
     func signOut() async throws
