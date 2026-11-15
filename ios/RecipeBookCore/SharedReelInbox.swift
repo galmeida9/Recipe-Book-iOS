@@ -2,7 +2,19 @@ import Foundation
 
 public struct SharedReelInbox: Sendable {
     public let appGroup: String
-    public init(appGroup: String) { self.appGroup = appGroup }
+    #if DEBUG
+    private let testDirectory: URL?
+    init(testDirectory: URL) {
+        appGroup = "test-only"
+        self.testDirectory = testDirectory
+    }
+    #endif
+    public init(appGroup: String) {
+        self.appGroup = appGroup
+        #if DEBUG
+        testDirectory = nil
+        #endif
+    }
 
     public func enqueue(_ url: URL) throws {
         guard let canonical = ReelURL.canonicalize(url) else {
@@ -17,8 +29,13 @@ public struct SharedReelInbox: Sendable {
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "reel" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .map { file in
-                let text = try String(contentsOf: file, encoding: .utf8)
+            .compactMap { file -> (id: String, url: URL)? in
+                let text: String
+                do { text = try String(contentsOf: file, encoding: .utf8) }
+                catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                    // Another committed submission may have acknowledged this file.
+                    return nil
+                }
                 guard let url = URL(string: text), let canonical = ReelURL.canonicalize(url) else {
                     throw APIError(status: 0, code: "invalid_inbox", message: "The shared URL could not be read.")
                 }
@@ -27,13 +44,24 @@ public struct SharedReelInbox: Sendable {
     }
 
     public func acknowledge(id: String) throws {
-        guard UUID(uuidString: id) != nil else {
+        guard let identifier = UUID(uuidString: id) else {
             throw APIError(status: 0, code: "invalid_inbox_id", message: "Invalid shared import identifier.")
         }
-        try FileManager.default.removeItem(at: container().appendingPathComponent(id + ".reel"))
+        let file = try container().appendingPathComponent(identifier.uuidString + ".reel")
+        do { try FileManager.default.removeItem(at: file) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // Acknowledgement is idempotent after a committed server job.
+            return
+        }
     }
 
     private func container() throws -> URL {
+        #if DEBUG
+        if let testDirectory {
+            try FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+            return testDirectory
+        }
+        #endif
         #if os(iOS)
         guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else {
             throw APIError(status: 0, code: "app_group_unavailable", message: "The shared app group is not provisioned.")

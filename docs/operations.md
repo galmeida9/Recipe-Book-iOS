@@ -303,6 +303,17 @@ sequence and SHA256. The decoder requires complete ordered frames, exact
 canonical base64/length/checksum and PNG headers/dimensions before writing to an
 empty output directory. Missing/truncated/masked payloads fail explicitly.
 This does not authorize artifact uploads or relax their cap/headroom gate.
+Run `43757024879` at `e511ca3` verified this alternative end-to-end in
+3m11s: four native PNGs totaling 784,026 bytes were retrieved from ordinary
+logs, decoded with exact length/SHA256 checks, and visually inspected. All
+four contain the fixture disclosure and intended sign-in/library/recipe/
+shopping UI. The run uploaded zero artifacts. This completes screenshot
+delivery, not live authentication/backend/import or signed-device proof.
+Share inbox files remain independent atomic writes. Acknowledgement normalizes
+UUID casing and is idempotent if a concurrent committed submission removed the
+same file; scans ignore only files concurrently removed, not malformed content
+or other I/O errors. A DEBUG-only internal filesystem test seam exercises this
+on temporary directories without authorizing an unprovisioned production group.
 
 On the actual iPhone, test launch, hosted sign-in/PKCE callback, invite rejection,
 private/shared isolation, promotion/demotion/last-owner errors, image/data
