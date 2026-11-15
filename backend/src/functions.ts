@@ -85,8 +85,6 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
         const job = await imports.create(await body(request), key);
         if (["queued", "running"].includes(job.state)) {
           try {
-            const oauth = await oauthRoute(request);
-            if (oauth) return oauth;
             const delivery = await importDelivery(job.id);
             if (delivery) await enqueueImport(delivery);
           }
@@ -121,6 +119,8 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
 
 export async function api(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   try {
+    const oauth = await oauthRoute(request);
+    if (oauth) return oauth;
     const principal = await authenticate(request.headers.get("authorization"));
     return await dispatch(request, new RecipeBookService(principal));
   } catch (error) {
