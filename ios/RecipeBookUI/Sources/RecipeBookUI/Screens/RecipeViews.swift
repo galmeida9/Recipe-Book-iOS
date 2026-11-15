@@ -49,31 +49,23 @@ struct RecipeDetailView: View {
             .frame(maxWidth: .infinity)
         }
         .refreshable { await load() }
-        .safeAreaInset(edge: .bottom) {
-            if !recipe.ingredients.isEmpty {
-                Button { showingShopping = true } label: {
-                    Label("Add to Shopping List", systemImage: "cart.badge.plus")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-                .background(.bar)
+        .navigationSubtitleIfAvailable(loaded.book.summary.name)
+        .bottomControlBar(isPresented: !recipe.ingredients.isEmpty) {
+            Button { showingShopping = true } label: {
+                Label("Add to Shopping List", systemImage: "cart.badge.plus")
+                    .frame(maxWidth: .infinity)
             }
+            .floatingPrimaryButtonStyle()
+            .controlSize(.large)
         }
-        .toolbar {
-            if permissions.canEdit(recipe.summary) {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Edit") { showingEditor = true }
-                }
-            }
-            if permissions.canDelete(recipe.summary) {
-                ToolbarItem(placement: .secondaryAction) {
-                    Button("Delete Recipe…", systemImage: "trash", role: .destructive) { confirmDelete = true }
-                }
-            }
-        }
+        .adaptiveToolbar(
+            primary: permissions.canEdit(recipe.summary)
+                ? [ToolbarAction("Edit", systemImage: "pencil") { showingEditor = true }]
+                : [],
+            secondary: permissions.canDelete(recipe.summary)
+                ? [ToolbarAction("Delete Recipe…", systemImage: "trash", role: .destructive) { confirmDelete = true }]
+                : []
+        )
         .sheet(isPresented: $showingEditor) {
             NavigationStack {
                 RecipeEditorView(title: "Edit Recipe", draft: RecipeDraft(editing: recipe), destinationBooks: nil,

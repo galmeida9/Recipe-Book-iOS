@@ -200,6 +200,17 @@ struct BookView: View {
         .errorAlert($runner.errorMessage)
     }
 
+    private func bookMenuActions(_ book: BookDetail, permissions: BookPermissions) -> [ToolbarAction] {
+        var actions: [ToolbarAction] = []
+        if book.summary.kind == .shared {
+            actions.append(ToolbarAction("Leave Book…", systemImage: "rectangle.portrait.and.arrow.right") { showingLeave = true })
+        }
+        if permissions.canDeleteBook {
+            actions.append(ToolbarAction("Delete Book…", systemImage: "trash", role: .destructive) { confirmDeleteBook = true })
+        }
+        return actions
+    }
+
     @ViewBuilder
     private func content(_ book: BookDetail) -> some View {
         let permissions = BookPermissions(book: book)
@@ -253,21 +264,10 @@ struct BookView: View {
         }
         .searchable(text: $search, prompt: "Search recipes")
         .refreshable { await load() }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showingEditor = true } label: { Label("Add Recipe", systemImage: "plus") }
-            }
-            ToolbarItem(placement: .secondaryAction) {
-                if book.summary.kind == .shared {
-                    Button("Leave Book…", systemImage: "rectangle.portrait.and.arrow.right") { showingLeave = true }
-                }
-            }
-            ToolbarItem(placement: .secondaryAction) {
-                if permissions.canDeleteBook {
-                    Button("Delete Book…", systemImage: "trash", role: .destructive) { confirmDeleteBook = true }
-                }
-            }
-        }
+        .adaptiveToolbar(
+            primary: [ToolbarAction("Add Recipe", systemImage: "plus") { showingEditor = true }],
+            secondary: bookMenuActions(book, permissions: permissions)
+        )
         .sheet(isPresented: $showingEditor) {
             NavigationStack {
                 RecipeEditorView(title: "New Recipe", draft: RecipeDraft(bookID: book.id), destinationBooks: nil,

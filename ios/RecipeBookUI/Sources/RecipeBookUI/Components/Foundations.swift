@@ -5,9 +5,11 @@ import RecipeBookPresentation
 
 // MARK: - Theme
 
-/// Recipe Book's visual language: warm paprika accent on system backgrounds, serif display
-/// type for titles (recipe-book feel) and SF for everything functional. All colours adapt to
-/// dark mode and keep ≥ 4.5:1 contrast against system backgrounds for text use.
+/// Recipe Book's visual language: system backgrounds and native bars (Liquid Glass comes from the
+/// system), a warm paprika accent used sparingly for primary actions/status, serif headlines for
+/// recipe and book titles (recipe-book feel), and SF for body copy and everything functional.
+/// Every colour has light, dark and Increase Contrast variants and keeps ≥ 4.5:1 contrast
+/// against system backgrounds for text use.
 public enum RecipeBookTheme {
     public static let accent = Color(light: (0.66, 0.25, 0.14), dark: (0.97, 0.60, 0.47))
     static let warning = Color(light: (0.60, 0.36, 0.00), dark: (1.00, 0.78, 0.36))
@@ -31,7 +33,14 @@ public enum RecipeBookTheme {
 extension Color {
     init(light: (Double, Double, Double), dark: (Double, Double, Double)) {
         self.init(uiColor: UIColor { traits in
-            let c = traits.userInterfaceStyle == .dark ? dark : light
+            let isDark = traits.userInterfaceStyle == .dark
+            var c = isDark ? dark : light
+            if traits.accessibilityContrast == .high {
+                // Increase Contrast: push light-mode colours darker and dark-mode colours lighter.
+                let target = isDark ? 1.0 : 0.0
+                let amount = 0.35
+                c = (c.0 + (target - c.0) * amount, c.1 + (target - c.1) * amount, c.2 + (target - c.2) * amount)
+            }
             return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
         })
     }

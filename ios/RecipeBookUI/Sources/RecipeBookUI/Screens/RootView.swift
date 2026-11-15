@@ -85,15 +85,12 @@ struct SignInView: View {
             .frame(maxWidth: 560, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .safeAreaInset(edge: .bottom) {
+        .bottomControlBar {
             RunningButton(title: "Sign In", isRunning: runner.isRunning) {
                 runner.run { onChange(try await service.signIn()) }
             }
-            .buttonStyle(.borderedProminent)
+            .floatingPrimaryButtonStyle()
             .controlSize(.large)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 12)
-            .background(.bar)
         }
         .errorAlert($runner.errorMessage)
     }
@@ -221,37 +218,55 @@ struct ProfileSetupView: View {
 
 @MainActor
 struct MainTabView: View {
-    enum Tab: Hashable { case library, suggestions, imports, shopping, account }
+    enum AppTab: Hashable { case library, suggestions, imports, shopping, account }
 
     let profile: UserProfile
     @Binding var incomingReel: URL?
     let onChange: (SessionState) -> Void
-    @State private var tab: Tab = .library
+    @State private var tab: AppTab = .library
 
     var body: some View {
-        TabView(selection: $tab) {
-            LibraryView()
-                .tabItem { Label("Library", systemImage: "books.vertical") }
-                .tag(Tab.library)
-            SuggestionsView()
-                .tabItem { Label("Cook", systemImage: "frying.pan") }
-                .tag(Tab.suggestions)
-            ImportsView()
-                .tabItem { Label("Imports", systemImage: "square.and.arrow.down") }
-                .tag(Tab.imports)
-            ShoppingListsView()
-                .tabItem { Label("Shopping", systemImage: "cart") }
-                .tag(Tab.shopping)
-            AccountView(profile: profile, onChange: onChange)
-                .tabItem { Label("Account", systemImage: "person.crop.circle") }
-                .tag(Tab.account)
-        }
-        .sheet(isPresented: Binding(get: { incomingReel != nil }, set: { if !$0 { incomingReel = nil } })) {
-            if let url = incomingReel {
-                ReelImportConfirmView(url: url) { job in
-                    incomingReel = nil
-                    if job != nil { tab = .imports }
+        tabs
+            .minimizingTabBarOnScroll()
+            .sheet(isPresented: Binding(get: { incomingReel != nil }, set: { if !$0 { incomingReel = nil } })) {
+                if let url = incomingReel {
+                    ReelImportConfirmView(url: url) { job in
+                        incomingReel = nil
+                        if job != nil { tab = .imports }
+                    }
                 }
+            }
+    }
+
+    @ViewBuilder
+    private var tabs: some View {
+        if #available(iOS 18, *) {
+            TabView(selection: $tab) {
+                Tab("Library", systemImage: "books.vertical", value: AppTab.library) { LibraryView() }
+                Tab("Cook", systemImage: "frying.pan", value: AppTab.suggestions) { SuggestionsView() }
+                Tab("Imports", systemImage: "square.and.arrow.down", value: AppTab.imports) { ImportsView() }
+                Tab("Shopping", systemImage: "cart", value: AppTab.shopping) { ShoppingListsView() }
+                Tab("Account", systemImage: "person.crop.circle", value: AppTab.account) {
+                    AccountView(profile: profile, onChange: onChange)
+                }
+            }
+        } else {
+            TabView(selection: $tab) {
+                LibraryView()
+                    .tabItem { Label("Library", systemImage: "books.vertical") }
+                    .tag(AppTab.library)
+                SuggestionsView()
+                    .tabItem { Label("Cook", systemImage: "frying.pan") }
+                    .tag(AppTab.suggestions)
+                ImportsView()
+                    .tabItem { Label("Imports", systemImage: "square.and.arrow.down") }
+                    .tag(AppTab.imports)
+                ShoppingListsView()
+                    .tabItem { Label("Shopping", systemImage: "cart") }
+                    .tag(AppTab.shopping)
+                AccountView(profile: profile, onChange: onChange)
+                    .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                    .tag(AppTab.account)
             }
         }
     }

@@ -148,7 +148,7 @@ struct ShoppingListView: View {
             }
         }
         .refreshable { reload += 1 }
-        .safeAreaInset(edge: .bottom) { addBar }
+        .bottomControlBar { addBar }
     }
 
     private func itemRow(_ item: ShoppingItem) -> some View {
@@ -195,8 +195,9 @@ struct ShoppingListView: View {
         }
     }
 
+    @ViewBuilder
     private var addBar: some View {
-        HStack(spacing: 8) {
+        let fields = HStack(spacing: 8) {
             TextField("Add item", text: $newItem)
                 .focused($addFocused)
                 .submitLabel(.done)
@@ -210,10 +211,16 @@ struct ShoppingListView: View {
             .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty || adding)
             .accessibilityLabel("Add item")
         }
-        .textFieldStyle(.roundedBorder)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.bar)
+        if #available(iOS 26, *) {
+            // One floating glass control; the list beneath stays opaque and readable.
+            fields
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .controlGlass()
+        } else {
+            fields.textFieldStyle(.roundedBorder)
+        }
     }
 
     /// Splits "500 g" into a quantity and unit; anything unparseable stays as unit-less text.

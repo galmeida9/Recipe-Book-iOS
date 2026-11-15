@@ -30,6 +30,20 @@ If no service is injected, the app falls back to `UnconfiguredRecipeBookService`
 - Suggestions come only from saved recipes the user can access.
 - Shopping lists are personal. "Have" checkboxes exclude ingredients the user already has before adding them to a list.
 
+## Design language
+
+The design follows the current iOS design language: Liquid Glass, introduced in iOS 26 and refined in iOS 27. It is based on Apple's HIG pages "Materials", "Branding" and "Color", and on the SwiftUI documentation.
+
+- **Navigation and controls use system components.** `TabView` uses `Tab` on iOS 18+ and minimizes on scroll on iOS 26+. Navigation bars, toolbars, sheets, menus and search are standard, so they get Liquid Glass from the system.
+- **Glass is limited to the control layer.** Bottom action bars use `safeAreaBar` with the system scroll-edge effect and `.glassProminent` buttons. The shopping add-item field is a single glass capsule. Recipe text, lists and book covers stay opaque and readable.
+- **Toolbars keep primary actions reachable.** On iOS 27, primary actions get `.visibilityPriority(.high)` and secondary or destructive actions go in `ToolbarOverflowMenu`. Earlier versions use `.primaryAction` / `.secondaryAction`. See `adaptiveToolbar` in `Components/PlatformStyle.swift`.
+- **Color and type are restrained.** The paprika accent is used only for primary actions and status. Serif type is used only for book and recipe headlines; SF is used everywhere else. Custom colors have light, dark and Increase Contrast variants.
+- **Accessibility settings are respected.** Reduce Transparency, Increase Contrast and Reduce Motion are honored by the system glass. No custom animations or transparency overrides were added.
+
+Availability: the deployment target stays at iOS 17. Newer APIs sit behind availability guards:
+- iOS 18 and iOS 26 APIs: `if #available(...)`.
+- iOS 27 APIs (`visibilityPriority`, `ToolbarOverflowMenu`): additionally wrapped in `#if compiler(>=6.4)`, because they need Xcode 27 / Swift 6.4.
+
 ## Validation status
 
 - `Tests/RecipeBookPresentationTests` cover the portable rules (`swift test`). **They have not been run.** No Swift toolchain was available in the Windows authoring environment.
