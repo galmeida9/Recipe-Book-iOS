@@ -6,17 +6,25 @@ param location string
 @maxLength(7)
 param namePrefix string
 @description('Verified Azure Entra administrator object ID, never an Apple/GitHub identity.')
-param sqlAdministratorObjectId string
-param sqlAdministratorName string
+param sqlAdministratorObjectId string = ''
+param sqlAdministratorName string = ''
+@description('Verified owned existing SQL server. When set, no SQL server/database/admin resources are modified.')
+param existingSqlServerName string = ''
 @description('Public Google web-application OAuth client ID used as the exact API ID-token audience.')
-param googleServerClientId string
+param googleServerClientId string = ''
 @description('Public Google iOS OAuth client ID accepted as the ID-token authorized party.')
-param googleIosClientId string
+param googleIosClientId string = ''
+@allowed(['Disabled', 'Enabled'])
+@description('Keep Disabled until real Google clients, workload tests and no-overage controls are verified.')
+param apiPublicNetworkAccess string = 'Disabled'
+@description('Enable only after the fresh Flex subnet is integrated. Adds only its SQL service-endpoint rule, never a blanket firewall.')
+param enableSqlServiceEndpoint bool = false
 
 var suffix = uniqueString(resourceGroup().id)
 var storageName = '${namePrefix}${suffix}'
 var functionName = '${namePrefix}-api-${suffix}'
 var sqlName = '${namePrefix}-sql-${suffix}'
+var resolvedSqlServerName = empty(existingSqlServerName) ? sqlName : existingSqlServerName
 var vaultName = '${namePrefix}-kv-${suffix}'
 var blobOwner = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 var queueContributor = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
@@ -80,14 +88,41 @@ resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   sku: { name: 'FC1', tier: 'FlexConsumption' }
   properties: { reserved: true }
 }
+resource network 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+  name: '${namePrefix}-api-network'
+  location: location
+  properties: {
+    addressSpace: { addressPrefixes: ['10.42.0.0/16'] }
+  }
+}
+resource subnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: network
+  name: 'functions'
+  properties: {
+    addressPrefix: '10.42.0.0/27'
+    delegations: [{ name: 'flex', properties: { serviceName: 'Microsoft.App/environments' } }]
+    serviceEndpoints: enableSqlServiceEndpoint ? [{ service: 'Microsoft.Sql', locations: [location] }] : []
+  }
+}
+resource sqlNetworkRule 'Microsoft.Sql/servers/virtualNetworkRules@2023-08-01' = if (enableSqlServiceEndpoint) {
+  name: '${resolvedSqlServerName}/recipe-functions-subnet'
+  dependsOn: [sqlBackend]
+  properties: {
+    virtualNetworkSubnetId: subnet.id
+    ignoreMissingVnetServiceEndpoint: false
+  }
+}
 resource api 'Microsoft.Web/sites@2024-04-01' = {
   name: functionName
   location: location
   kind: 'functionapp,linux'
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identity.id}': {} } }
+  dependsOn: [blobRole, queueRole, tableRole]
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
+    publicNetworkAccess: apiPublicNetworkAccess
+    virtualNetworkSubnetId: subnet.id
     keyVaultReferenceIdentity: identity.id
     functionAppConfig: {
       deployment: {
@@ -100,7 +135,7 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
           }
         }
       }
-      scaleAndConcurrency: { maximumInstanceCount: 1, instanceMemoryMB: 512 }
+      scaleAndConcurrency: { maximumInstanceCount: 1, instanceMemoryMB: 512, alwaysReady: [] }
       runtime: { name: 'node', version: '24' }
     }
     siteConfig: {
@@ -116,7 +151,7 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'ImportQueue__clientId', value: identity.properties.clientId }
         { name: 'QUEUE_SERVICE_URL', value: storage.properties.primaryEndpoints.queue }
         { name: 'BLOB_SERVICE_URL', value: storage.properties.primaryEndpoints.blob }
-        { name: 'SQL_SERVER', value: sqlBackend.outputs.sqlServerHostname }
+        { name: 'SQL_SERVER', value: '${resolvedSqlServerName}.${environment().suffixes.sqlServerHostname}' }
         { name: 'SQL_DATABASE', value: 'RecipeBook' }
         { name: 'GOOGLE_SERVER_CLIENT_ID', value: googleServerClientId }
         { name: 'GOOGLE_IOS_CLIENT_ID', value: googleIosClientId }
@@ -145,7 +180,7 @@ resource vaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: vault
   properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', secretReader), principalId: identity.properties.principalId, principalType: 'ServicePrincipal' }
 }
-module sqlBackend 'sql.bicep' = {
+module sqlBackend 'sql.bicep' = if (empty(existingSqlServerName)) {
   name: 'recipe-book-sql-resources'
   params: {
     location: location
@@ -160,5 +195,8 @@ module sqlBackend 'sql.bicep' = {
 output apiBaseUrl string = 'https://${api.properties.defaultHostName}/api/'
 output functionPrincipalId string = identity.properties.principalId
 output functionAppName string = api.name
-output sqlServerName string = sqlBackend.outputs.sqlServerName
+output sqlServerName string = resolvedSqlServerName
+output functionIdentityClientId string = identity.properties.clientId
+output functionIdentityName string = identity.name
+output networkName string = network.name
 output keyVaultName string = vault.name

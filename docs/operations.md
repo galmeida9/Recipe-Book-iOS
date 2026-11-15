@@ -182,6 +182,12 @@ SQL invitation and account tombstone, so invitation revocation/account deletion
 denies even an unexpired token. Late restore/sign-in callbacks cannot revive a
 signed-out session or overwrite a newer one. Real Console consent/login, Keychain
 restore, callback routing and SideStore refresh remain physical-device gates.
+Direct Google run `43758846685` at `d568f7a` passed official SDK compilation,
+seven Core tests, fifteen presentation tests and eleven native tests (five
+Google configuration/restore/sign-out race cases). The expanded actual SQL run
+passed all sixteen tests with zero skips, including repeated pending identity,
+invited first login, unknown denial, revocation/deletion and a concurrent
+100-pending-account boundary. The temporary operator firewall was removed.
 The first trial targets one known signed bundle/iOS client. Different SideStore
 teams may produce different bundle IDs and need their own Google iOS registrations
 and corresponding authorized-client configuration before multi-team distribution;
@@ -215,6 +221,33 @@ after re-signing and test the device; an unsigned layout or Simulator pass is
 not installation proof. `Verify-Ipa.ps1 -UnsignedInstallationCheck` checks only
 the explicitly named unsigned diagnostic; normal verification still requires
 both profiles and subsequent cryptographic/device checks.
+Private draft `446357525`, built by run `43760393301` in 2m7s at `a1b21f7`,
+contains a 2,246,152-byte unsigned diagnostic IPA. SHA256:
+`18be88ace0dae20de5a181453a8edff5335eb69d0e296e14bfc6a3a2e7050cff`.
+Authenticated download and read-only ZIP inspection confirmed the retained app/
+extension, no profiles or signing keys, and matching checksum. The anonymous
+asset returned 404; draft/published flags and zero Actions artifacts were read
+back. Windows execution policy blocked running the verification PS1 directly;
+no policy was changed or bypassed. Equivalent ZIP inspection used supported
+interactive .NET APIs.
+
+## Closed core provisioning
+
+`main.bicep` defaults the API to `publicNetworkAccess=Disabled`, leaves unknown
+Google IDs empty (never fabricated), and explicitly has no always-ready instances.
+`existingSqlServerName` reuses the verified owned free database without changing
+the server/admin/schema. New owned Flex/identity/storage resources remain under
+the subscription's read-back credit hard-stop; no premium plan/NAT gateway/private
+endpoint is added.
+The fresh Flex subnet is delegated first; `enableSqlServiceEndpoint=true` then
+adds only that subnet's SQL service-endpoint rule. Service endpoints have no
+additional charge and regional VNet integration supports endpoint-secured data
+services: https://learn.microsoft.com/en-us/azure/azure-functions/functions-networking-options .
+Verify actual provider acceptance and network/identity behavior; never substitute
+an entire data-center/Allow-Azure-services firewall or a paid network fallback.
+The workload SQL user must use the managed identity's **client ID** as its
+binary SID/TYPE=E, not its object ID, per Microsoft's CREATE USER guidance.
+Grant only dbo SELECT/INSERT/UPDATE/DELETE, not database owner/DDL/Graph roles.
 
 ## Account access and ownership
 
