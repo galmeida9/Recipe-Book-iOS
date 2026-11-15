@@ -6,6 +6,8 @@ import { RecipeBookService } from "./service.js";
 import { ImportService, importDelivery, failImportDelivery, processImport } from "./imports.js";
 import { enqueueImport } from "./queue.js";
 import { readRecipeImage } from "./images.js";
+import { oauthRoute } from "./oauth.js";
+import "./bootstrap.js";
 
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 async function body(request: HttpRequest): Promise<unknown> {
@@ -83,6 +85,8 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
         const job = await imports.create(await body(request), key);
         if (["queued", "running"].includes(job.state)) {
           try {
+            const oauth = await oauthRoute(request);
+            if (oauth) return oauth;
             const delivery = await importDelivery(job.id);
             if (delivery) await enqueueImport(delivery);
           }

@@ -12,11 +12,7 @@
 <key>RecipeBookAppGroup</key><string>$(RECIPEBOOK_APP_GROUP)</string>
 <key>RecipeBookInstallationCheck</key><string>$(RECIPEBOOK_INSTALLATION_CHECK)</string>
 <key>RecipeBookAPIURL</key><string>$(RECIPEBOOK_API_URL)</string>
-<key>GIDClientID</key><string>$(RECIPEBOOK_GOOGLE_IOS_CLIENT_ID)</string>
-<key>GIDServerClientID</key><string>$(RECIPEBOOK_GOOGLE_SERVER_CLIENT_ID)</string>
-<key>RecipeBookGoogleCallbackScheme</key><string>$(RECIPEBOOK_GOOGLE_CALLBACK_SCHEME)</string>
-<key>RecipeBookGoogleBundleID</key><string>$(RECIPEBOOK_GOOGLE_BUNDLE_ID)</string>
 <key>CFBundleURLTypes</key><array><dict>
 <key>CFBundleURLSchemes</key><array><string>recipebook</string></array>
-</dict><dict><key>CFBundleURLSchemes</key><array><string>$(RECIPEBOOK_GOOGLE_CALLBACK_SCHEME)</string></array></dict></array>
+</dict></array>
 </dict></plist>

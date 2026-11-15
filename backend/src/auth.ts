@@ -6,10 +6,9 @@ const clientPattern = /^\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/;
 const googleKeys = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"),
   { timeoutDuration: 5000, cooldownDuration: 30_000 });
 
-export function googleAuthenticator(configuration: { serverClientID: string; iosClientID: string }, keys: JWTVerifyGetKey = googleKeys) {
-  const { serverClientID, iosClientID } = configuration;
-  invariant(clientPattern.test(serverClientID) && clientPattern.test(iosClientID) && serverClientID !== iosClientID,
-    503, "configuration", "Separate Google web/server and iOS OAuth client IDs must be configured.");
+export function googleAuthenticator(configuration: { serverClientID: string; nonce?: string }, keys: JWTVerifyGetKey = googleKeys) {
+  const { serverClientID, nonce } = configuration;
+  invariant(clientPattern.test(serverClientID), 503, "configuration", "Configure the central Google Web OAuth client ID.");
   return async (authorization: string | null): Promise<Principal> => {
     invariant(authorization && authorization.length <= 16384 &&
       /^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(authorization),
@@ -18,7 +17,7 @@ export function googleAuthenticator(configuration: { serverClientID: string; ios
     try {
       ({ payload } = await jwtVerify(authorization.slice(7), keys, {
         issuer: [googleIssuer, "accounts.google.com"], audience: serverClientID, algorithms: ["RS256"],
-        requiredClaims: ["iss", "aud", "sub", "exp", "iat", "azp"], maxTokenAge: "65m", clockTolerance: 5
+        requiredClaims: ["iss", "aud", "sub", "exp", "iat"], maxTokenAge: "65m", clockTolerance: 5
       }));
     } catch (error) {
       if (error instanceof errors.JOSEError && !(error instanceof errors.JWKSTimeout) &&
@@ -27,7 +26,8 @@ export function googleAuthenticator(configuration: { serverClientID: string; ios
       }
       throw new AppError(503, "identity_unavailable", "Google identity verification is temporarily unavailable. Try again.");
     }
-    invariant(payload.aud === serverClientID && payload["azp"] === iosClientID &&
+    invariant(payload.aud === serverClientID && (payload["azp"] === undefined || payload["azp"] === serverClientID) &&
+      (nonce === undefined || payload["nonce"] === nonce) &&
       typeof payload.sub === "string" && /^\d{1,200}$/.test(payload.sub) &&
       typeof payload.exp === "number" && typeof payload.iat === "number" &&
       Number.isInteger(payload.exp) && Number.isInteger(payload.iat) &&
@@ -40,7 +40,6 @@ export function googleAuthenticator(configuration: { serverClientID: string; ios
 
 export async function authenticate(authorization: string | null): Promise<Principal> {
   return googleAuthenticator({
-    serverClientID: requiredSetting("GOOGLE_SERVER_CLIENT_ID"),
-    iosClientID: requiredSetting("GOOGLE_IOS_CLIENT_ID")
+    serverClientID: requiredSetting("GOOGLE_SERVER_CLIENT_ID")
   })(authorization);
 }

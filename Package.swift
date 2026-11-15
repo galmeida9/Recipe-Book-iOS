@@ -9,13 +9,13 @@ let package = Package(
         .library(name: "RecipeBookAuth", targets: ["RecipeBookAuth"])
     ],
     dependencies: [
-        .package(url: "https://github.com/google/GoogleSignIn-iOS.git", exact: "9.0.0")
+        .package(url: "https://github.com/openid/AppAuth-iOS.git", exact: "2.0.0")
     ],
     targets: [
         .target(name: "RecipeBookCore", path: "ios/RecipeBookCore"),
         .target(name: "RecipeBookAuth", dependencies: [
             "RecipeBookCore",
-            .product(name: "GoogleSignIn", package: "googlesignin-ios", condition: .when(platforms: [.iOS]))
+            .product(name: "AppAuth", package: "appauth-ios", condition: .when(platforms: [.iOS]))
         ], path: "ios/RecipeBookAuth"),
         .testTarget(name: "RecipeBookCoreTests", dependencies: ["RecipeBookCore"], path: "ios/RecipeBookCoreTests")
     ]

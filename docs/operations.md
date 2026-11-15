@@ -115,9 +115,9 @@ Deployment prerequisites:
 
 - Explicit resource-group/region/cost authorization and a verified subscription.
 - An Entra SQL administrator for workload access, not customer authentication.
-- Google iOS and web/server OAuth client IDs from the same Google Auth Platform
-  project, with the iOS client registering the final signed bundle ID exactly.
-  Configure the server's `GOOGLE_SERVER_CLIENT_ID` and `GOOGLE_IOS_CLIENT_ID`.
+- One central Google Web OAuth client and server-only secret in the existing
+  vault. Configure `GOOGLE_SERVER_CLIENT_ID` and the vault reference for
+  `GOOGLE_OAUTH_CLIENT_SECRET`.
   No CIAM directory, trial, delegated API scope, customer MAU service or Google
   client secret is used.
 - Approved Functions outbound SQL firewall addresses and operator IP, or
@@ -129,18 +129,26 @@ Deployment prerequisites:
 
 ## Google-only customer sign-in
 
-Customers use **Google only** through the official GoogleSignIn 9.0.0 SDK and its
-AppAuth/system-browser flow. The coordinator selected this implementation to
-remove the unused customer-tenant trial/MAU dependency; no separate user approval
-response is claimed. Azure stores app accounts, invitations and data, but does
-not issue customer tokens. Passwords, custom session tokens, Firebase/Identity
-Platform, paid enrollment and billing attachment are not used.
+Customers use **Google only** through AppAuth 2.0.0's native system-browser flow
+and the official `google-auth-library` server broker. There is **one owner-managed
+Web OAuth client for everyone**, not an iOS client/project per friend or signing
+team. The coordinator selected this fix for the rejected per-team setup; no
+separate user architecture approval is claimed. No passwords, app-issued JWTs,
+CIAM trial/MAU service, Firebase/Identity Platform or paid Apple membership.
 
-The SDK owns OAuth PKCE, credential/Keychain persistence and token refresh. Its
+AppAuth owns OAuth state, nonce, S256 PKCE and secure-session serialization. The
+HTTPS server callback binds Google's short authorization code to the native
+challenge/nonce in `dbo.OAuthFlows`; it returns only code/state through the stable
+`recipebook://oauth` scheme, never tokens. Code bindings expire after 90 seconds
+and are atomically consumed before the official library's token exchange.
+At most 100 ten-minute login flows exist; expired rows are reclaimed on demand.
+Google credentials travel only in HTTPS responses and refresh state is stored
+in device-only Keychain. The Web client secret stays in the vault/backend.
+The
 Google **ID token**, not its Google-services access token or plain user ID, is
 sent as the existing HTTPS API bearer credential. The established `jose`
 verifier uses Google's fixed HTTPS rotating-key endpoint and RS256, requires the
-exact web/server audience and iOS authorized party (`azp`), validates issuer,
+exact central Web audience (and the same authorized party when supplied), issuer,
 stable numeric subject, issued/expiry times and a maximum one-hour token lifetime.
 Both documented Google issuer spellings map to `https://accounts.google.com`.
 Email/name claims never create membership or link identities. Key-service
@@ -150,23 +158,23 @@ unavailability is a visible 503, not a false invalid-login response.
 select/create an unbilled project, configure Recipe Book branding/support contact
 and External audience in Testing, and add the intended trial Google accounts as
 test users. Request only basic OpenID/profile/email scopes. In Clients create
-one **iOS** OAuth client for the final signed app's exact bundle ID, and one
-**Web application** client as the backend audience. No client secret is needed
-by Recipe Book and none may be put in the app/repository/chat. Return only the
-two public client IDs, iOS reversed URL scheme and registered bundle ID.
-Google's setup: https://developers.google.com/identity/sign-in/ios/start-integrating ;
+one **Web application** client with authorized redirect:
+`https://recipe-api-nb2yqx3agzmou.azurewebsites.net/api/auth/google/callback`.
+Supply only its public client ID. Put its secret directly in Azure Portal >
+the existing `recipe-kv-nb2yqx3agzmou` vault > Secrets > Generate/Import >
+`google-oauth-client-secret`. Never put the secret in chat/CI/the phone/repo.
+The owner may need vault-scoped **Key Vault Secrets Officer** to enter it;
+the Function identity already has **Key Vault Secrets User**.
+Google's server setup: https://developers.google.com/identity/protocols/oauth2/web-server ;
 backend-token requirements: https://developers.google.com/identity/sign-in/ios/backend-auth .
 
-Mobile non-secret build settings are `RECIPEBOOK_GOOGLE_IOS_CLIENT_ID`,
-`RECIPEBOOK_GOOGLE_SERVER_CLIENT_ID`, `RECIPEBOOK_GOOGLE_CALLBACK_SCHEME`,
-`RECIPEBOOK_GOOGLE_BUNDLE_ID` and `RECIPEBOOK_API_URL`. A typical unsuffixed bundle
-is `com.recipebook.app`, but **do not register that by assumption for SideStore**:
-inspect the actual re-signed app/profile first. The runtime rejects a registered/
-actual bundle mismatch explicitly. The reversed iOS-client scheme must remain in
-the signed app's URL types and callbacks are delegated to the SDK. Keep App
-Groups, application identifier and default Keychain access authorized through
-re-signing/refresh. The SDK includes AppCheckCore transitively but this app never
-calls its configure/debug-provider APIs or enables App Check/Firebase services.
+The mobile build needs only `RECIPEBOOK_API_URL` and its existing stable callback.
+It fetches the public Web client ID from `/auth/google/config`; there is no
+Google client secret or signed-bundle OAuth registration in the mobile bundle.
+Pinned SideStore `4f3d18d` preserves existing URL schemes except its own
+`sidestore-*` entries, even when changing CFBundleIdentifier. Keep App Groups,
+application identifier and Keychain authorization intact for share/refresh.
+Real device callback/group verification remains required.
 
 Unknown Google users may authenticate with Google, but cannot access books,
 recipes, images, imports or shopping. Their pending app UUID is unique per
@@ -176,22 +184,20 @@ bypass pending capacity. This is not creation of an app-owned IdP identity.
 Operators must verify the stable Google subject before issuing an invitation;
 Google Console test-user access is a separate gate, not a book/app invitation.
 
-Local sign-out clears SDK credentials; it cannot invalidate a previously issued
+Local sign-out clears Keychain credentials; it cannot invalidate a previously issued
 Google bearer token before its expiry. Every data operation still checks the live
 SQL invitation and account tombstone, so invitation revocation/account deletion
 denies even an unexpired token. Late restore/sign-in callbacks cannot revive a
 signed-out session or overwrite a newer one. Real Console consent/login, Keychain
 restore, callback routing and SideStore refresh remain physical-device gates.
-Direct Google run `43758846685` at `d568f7a` passed official SDK compilation,
+Historical native-client run `43758846685` at `d568f7a` passed SDK compilation,
 seven Core tests, fifteen presentation tests and eleven native tests (five
 Google configuration/restore/sign-out race cases). The expanded actual SQL run
 passed all sixteen tests with zero skips, including repeated pending identity,
 invited first login, unknown denial, revocation/deletion and a concurrent
 100-pending-account boundary. The temporary operator firewall was removed.
-The first trial targets one known signed bundle/iOS client. Different SideStore
-teams may produce different bundle IDs and need their own Google iOS registrations
-and corresponding authorized-client configuration before multi-team distribution;
-do not share Apple credentials or pretend one client covers rewritten identifiers.
+That native-client checkpoint is preserved in Git, but its per-team Google
+registration instructions are superseded by the central Web broker.
 
 ## Private installation-check delivery
 
@@ -248,6 +254,12 @@ an entire data-center/Allow-Azure-services firewall or a paid network fallback.
 The workload SQL user must use the managed identity's **client ID** as its
 binary SID/TYPE=E, not its object ID, per Microsoft's CREATE USER guidance.
 Grant only dbo SELECT/INSERT/UPDATE/DELETE, not database owner/DDL/Graph roles.
+Deployment ZIPs must use `/` entry separators even when packaged on Windows.
+Windows PowerShell 5 `Compress-Archive` produced backslash entries that are not
+valid Linux module paths; use `ZipArchive.CreateEntry` with normalized names (or
+a supported POSIX packager), and verify `host.json`, `package.json` and
+`dist/functions.js` at their exact paths before deployment. A successful file
+upload is not proof that the Functions host indexed its handlers.
 
 ## Account access and ownership
 

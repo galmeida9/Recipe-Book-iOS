@@ -13,8 +13,7 @@ private final class GoogleDriverFixture: GoogleSessionDriver {
     var refreshCount = 0
     var error: Error?
     var credential = GoogleCredential(idToken: "synthetic-google-ID-token", expiresAt: Date().addingTimeInterval(3600),
-                                      iosClientID: "123456789-iosfixture.apps.googleusercontent.com",
-                                      serverClientID: "123456789-serverfixture.apps.googleusercontent.com")
+                                      subject: "10000001")
     func signIn() async throws -> GoogleCredential { try await result() }
     func restore() async throws -> GoogleCredential { restoreCount += 1; return try await result() }
     func refresh() async throws -> GoogleCredential { refreshCount += 1; return try await result() }
@@ -36,15 +35,13 @@ private final class GoogleDriverFixture: GoogleSessionDriver {
 
 @MainActor
 final class GoogleAuthTests: XCTestCase {
-    private func configuration(actualBundleID: String = "com.recipebook.app") throws -> GoogleAuthConfiguration {
-        try GoogleAuthConfiguration(iosClientID: "123456789-iosfixture.apps.googleusercontent.com",
-            serverClientID: "123456789-serverfixture.apps.googleusercontent.com",
-            callbackScheme: "com.googleusercontent.apps.123456789-iosfixture",
-            registeredBundleID: "com.recipebook.app", actualBundleID: actualBundleID)
+    private func configuration() throws -> GoogleAuthConfiguration {
+        try GoogleAuthConfiguration(apiBaseURL: URL(string: "https://fixture.invalid/api")!)
     }
-    func testConfigurationRejectsResignedBundleMismatch() throws {
+    func testConfigurationUsesStableCallbackWithoutSigningTeamRegistration() throws {
         _ = try configuration()
-        XCTAssertThrowsError(try configuration(actualBundleID: "com.recipebook.app.RESIGNED"))
+        XCTAssertEqual(try configuration().callbackURL.absoluteString, "recipebook://oauth")
+        XCTAssertThrowsError(try GoogleAuthConfiguration(apiBaseURL: URL(string: "http://fixture.invalid/api")!))
     }
     func testRestorationReturnsIDTokenAndReusesFreshCredential() async throws {
         let driver = GoogleDriverFixture()
@@ -89,16 +86,16 @@ final class GoogleAuthTests: XCTestCase {
         XCTAssertFalse(auth.hasSession())
         XCTAssertFalse(driver.hasStoredSession)
     }
-    func testKeychainFailuresRemainVisibleAndWrongClientsAreRejected() async throws {
+    func testKeychainFailuresRemainVisibleAndExpiredTokensAreRejected() async throws {
         let driver = GoogleDriverFixture()
-        driver.error = NSError(domain: "com.google.GIDSignIn", code: -2)
+        driver.error = APIError(status: 0, code: "keychain", message: "Synthetic storage failure")
         let auth = GoogleAuth(configuration: try configuration(), driver: driver)
         do { _ = try await auth.accessToken(); XCTFail("Keychain failure must not fabricate a token.") }
         catch let error as APIError { XCTAssertEqual(error.code, "keychain") }
         driver.error = nil
-        driver.credential = GoogleCredential(idToken: "synthetic-ID-token", expiresAt: Date().addingTimeInterval(3600),
-                                            iosClientID: "wrong-client", serverClientID: nil)
-        do { _ = try await auth.accessToken(); XCTFail("Wrong stored clients must fail.") }
+        driver.credential = GoogleCredential(idToken: "synthetic-ID-token", expiresAt: Date().addingTimeInterval(-60),
+                                            subject: "10000001")
+        do { _ = try await auth.accessToken(); XCTFail("Expired ID tokens must fail.") }
         catch let error as APIError { XCTAssertEqual(error.status, 401) }
     }
 }

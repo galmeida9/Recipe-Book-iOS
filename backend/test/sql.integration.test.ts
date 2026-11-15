@@ -1,15 +1,43 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { query, serializable, database } from "../src/database.js";
 import { RecipeBookService, pendingAccountLimit } from "../src/service.js";
 import { googleIssuer } from "../src/auth.js";
+import { SQLFlowStore } from "../src/oauth.js";
 import { AppError } from "../src/contracts.js";
 import { ImportService, processImport, importDelivery, failImportDelivery } from "../src/imports.js";
 import { ApifyProvider, type ProviderBudget, type ProviderRun } from "../src/apify.js";
 import { readRecipeImage } from "../src/images.js";
 
 const enabled = process.env["RUN_SQL_INTEGRATION"] === "true";
+async function verifyOAuthCodeBindings() {
+  const store = new SQLFlowStore();
+  const state = randomUUID();
+  const second = randomUUID();
+  const challenge = createHash("sha256").update("synthetic-verifier").digest("base64url");
+  const code = randomUUID();
+  try {
+    await store.create(state, "synthetic-nonce", challenge);
+    await store.bind(state, code);
+    await assert.rejects(() => store.bind(state, code));
+    await assert.rejects(() => store.consume(code, "wrong-challenge"));
+    const outcomes = await Promise.allSettled([store.consume(code, challenge), store.consume(code, challenge)]);
+    assert.equal(outcomes.filter(value => value.status === "fulfilled").length, 1, "Authorization code is consumed exactly once.");
+    const success = outcomes.find(value => value.status === "fulfilled");
+    assert.ok(success?.status === "fulfilled" && success.value === "synthetic-nonce");
+    await store.create(second, "synthetic-nonce", challenge);
+    await store.bind(second, code);
+    await serializable(transaction => query(transaction, "UPDATE dbo.OAuthFlows SET ExpiresAt=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE StateHash=@state",
+      { state: createHash("sha256").update(second).digest("hex") }));
+    await assert.rejects(() => store.consume(code, challenge));
+  } finally {
+    await serializable(async transaction => {
+      for (const value of [state, second]) await query(transaction, "DELETE dbo.OAuthFlows WHERE StateHash=@state",
+        { state: createHash("sha256").update(value).digest("hex") });
+    });
+  }
+}
 async function verifyGoogleAccountLifecycle() {
   const subject = () => BigInt("0x" + randomUUID().replaceAll("-", "")).toString();
   const subjects = [subject(), subject(), subject(), subject()];
@@ -96,6 +124,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   }
   const provider = new FixtureProvider();
   try {
+    await verifyOAuthCodeBindings();
     await verifyGoogleAccountLifecycle();
     await serializable(async transaction => {
       for (const principal of principals) {

@@ -12,8 +12,6 @@ param sqlAdministratorName string = ''
 param existingSqlServerName string = ''
 @description('Public Google web-application OAuth client ID used as the exact API ID-token audience.')
 param googleServerClientId string = ''
-@description('Public Google iOS OAuth client ID accepted as the ID-token authorized party.')
-param googleIosClientId string = ''
 @allowed(['Disabled', 'Enabled'])
 @description('Keep Disabled until real Google clients, workload tests and no-overage controls are verified.')
 param apiPublicNetworkAccess string = 'Disabled'
@@ -28,6 +26,7 @@ var resolvedSqlServerName = empty(existingSqlServerName) ? sqlName : existingSql
 var vaultName = '${namePrefix}-kv-${suffix}'
 var blobOwner = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
 var queueContributor = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+var queueMessageSender = 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a'
 var tableContributor = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
 var secretReader = '4633458b-17de-408a-b874-0445c86b69e6'
 
@@ -64,6 +63,10 @@ resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-0
 resource importQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
   parent: queueService
   name: 'imports'
+}
+resource poisonQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: 'imports-poison'
 }
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: vaultName
@@ -117,7 +120,7 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
   location: location
   kind: 'functionapp,linux'
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identity.id}': {} } }
-  dependsOn: [blobRole, queueRole, tableRole]
+  dependsOn: [blobRole, queueRole, importSendRole, poisonSendRole, tableRole]
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
@@ -142,6 +145,9 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
       appSettings: [
+        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
+        { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' }
+        { name: 'FUNCTIONS_NODE_BLOCK_ON_ENTRY_POINT_ERROR', value: 'true' }
         { name: 'AZURE_CLIENT_ID', value: identity.properties.clientId }
         { name: 'AzureWebJobsStorage__accountName', value: storage.name }
         { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
@@ -154,7 +160,7 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'SQL_SERVER', value: '${resolvedSqlServerName}.${environment().suffixes.sqlServerHostname}' }
         { name: 'SQL_DATABASE', value: 'RecipeBook' }
         { name: 'GOOGLE_SERVER_CLIENT_ID', value: googleServerClientId }
-        { name: 'GOOGLE_IOS_CLIENT_ID', value: googleIosClientId }
+        { name: 'GOOGLE_OAUTH_CLIENT_SECRET', value: '@Microsoft.KeyVault(VaultName=${vaultName};SecretName=google-oauth-client-secret)' }
         { name: 'APIFY_ENABLED', value: 'false' }
       ]
     }
@@ -169,6 +175,16 @@ resource queueRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storage.id, identity.id, queueContributor)
   scope: storage
   properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueContributor), principalId: identity.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource importSendRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(importQueue.id, identity.id, queueMessageSender)
+  scope: importQueue
+  properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender), principalId: identity.properties.principalId, principalType: 'ServicePrincipal' }
+}
+resource poisonSendRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(poisonQueue.id, identity.id, queueMessageSender)
+  scope: poisonQueue
+  properties: { roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', queueMessageSender), principalId: identity.properties.principalId, principalType: 'ServicePrincipal' }
 }
 resource tableRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storage.id, identity.id, tableContributor)
