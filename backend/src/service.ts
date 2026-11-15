@@ -12,6 +12,7 @@ interface Access extends BookRow { role: Role }
 interface RecipeRow { id: string; bookId: string; authorId: string; draft: string; version: number }
 interface ListRow { id: string; name: string; items: string; version: number }
 const nameSchema = z.string().trim().min(1).max(120);
+export const pendingAccountLimit = 100;
 export const createBookSchema = z.object({ name: nameSchema, kind: z.enum(["personal", "shared"]) }).strict();
 export const createListSchema = z.object({ name: nameSchema }).strict();
 export const replaceItemsSchema = z.object({ items: z.array(shoppingItemSchema).max(1000) }).strict()
@@ -83,6 +84,12 @@ export class RecipeBookService {
         `SELECT CONVERT(varchar(36),Id) AS id,DisplayName AS displayName,Deleted AS deleted
         FROM dbo.Accounts WITH(UPDLOCK,HOLDLOCK) WHERE Issuer=@issuer AND Subject=@subject`, { ...this.principal });
       if (!rows[0]) {
+        if (invites[0]!.count === 0) {
+          const pending = await query<{ count: number }>(transaction,
+            "SELECT COUNT(*) AS count FROM dbo.Accounts WITH(UPDLOCK,HOLDLOCK) WHERE Active=0 AND Deleted=0");
+          invariant(pending[0]!.count < pendingAccountLimit, 503, "onboarding_capacity",
+            "Pending invitation capacity is full. Ask the app administrator for access before signing in.");
+        }
         const id = randomUUID();
         await query(transaction, "INSERT dbo.Accounts(Id,Issuer,Subject,Active) VALUES(@id,@issuer,@subject,0)", { id, ...this.principal });
         rows = [{ id, displayName: null, deleted: false }];

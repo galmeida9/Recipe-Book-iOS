@@ -37,7 +37,7 @@ Debug now uses the standard active-architecture setting consistently. Run
 5 native Simulator tests (4 adapter checks plus unconfigured launch). Artifact
 upload was skipped and the run has zero uploaded artifacts. The host's newest
 installed Xcode was 26.6, so the guarded iOS 27-specific APIs remain uncompiled.
-Simulator success does not prove signing, Google federation or iPhone operation.
+Simulator success does not prove signing, live Google authentication or iPhone operation.
 
 ## Local backend
 
@@ -93,7 +93,7 @@ credits to individual dev/test; user authorization is not a verified published
 exception. Check the actual subscription terms/offer, spending limit, permitted
 services, selected region, SQL SKU, Flex Consumption support and complete monthly
 estimate before any deployment. Never remove spending limits, upgrade billing,
-or assume Azure credits cover Entra External ID/third-party usage.
+or assume Azure credits cover third-party usage.
 
 `infrastructure/main.bicep` uses Flex Consumption Node 24, one maximum 512 MiB
 instance with no always-ready instances, SQL General Purpose serverless Gen5
@@ -114,20 +114,12 @@ Template compilation does not prove subscription eligibility or deployment.
 Deployment prerequisites:
 
 - Explicit resource-group/region/cost authorization and a verified subscription.
-- An Entra SQL administrator and a separate External ID consumer tenant/app/API.
-- Disable External ID self-sign-up at the identity provider before exposure:
-  verify the actual external tenant, application and user flow, use the Graph
-  authenticationEventsFlow update with `isSignUpAllowed=false`, and read it back.
-  Operator-controlled identity provisioning, combined tenant MAU billing and
-  enforceable no-overage protection are separate prerequisites. A workforce AAD
-  tenant or backend allowlist is not this proof. No SMS/M2M/premium features.
-  The [Graph flow-update permission](https://learn.microsoft.com/en-us/graph/api/authenticationeventsflow-update?view=graph-rest-1.0)
-  is `EventListener.ReadWrite.All`; delegated operation requires the External ID
-  User Flow Administrator role or an appropriate higher role. Do not assume the
-  Azure CLI's existing workforce sign-in has these consumer-tenant permissions.
-- Exact hosted authorize/token URLs, issuer, JWKS URL, audience and delegated API
-  scope from the tenant configuration; register `recipebook://oauth` as the
-  native public-client callback and allow PKCE/offline access. No mobile secret.
+- An Entra SQL administrator for workload access, not customer authentication.
+- Google iOS and web/server OAuth client IDs from the same Google Auth Platform
+  project, with the iOS client registering the final signed bundle ID exactly.
+  Configure the server's `GOOGLE_SERVER_CLIENT_ID` and `GOOGLE_IOS_CLIENT_ID`.
+  No CIAM directory, trial, delegated API scope, customer MAU service or Google
+  client secret is used.
 - Approved Functions outbound SQL firewall addresses and operator IP, or
   separately approved private networking. The template deliberately does not
   open SQL to all Azure services. Apply schema and grant the API managed identity
@@ -137,31 +129,59 @@ Deployment prerequisites:
 
 ## Google-only customer sign-in
 
-Customers use **Google only**, not a Microsoft account, Apple sign-in or native
-email/password authentication. The app opens the secure iOS system authentication
-session with PKCE into the branded customer tenant's Google federation; Azure
-still issues the API access token and persists the separate app account/data.
-Do not accept a Google ID token as an API bearer token or infer app access from
-an email claim. No customer identity provider has been configured or exposed yet.
+Customers use **Google only** through the official GoogleSignIn 9.0.0 SDK and its
+AppAuth/system-browser flow. The coordinator selected this implementation to
+remove the unused customer-tenant trial/MAU dependency; no separate user approval
+response is claimed. Azure stores app accounts, invitations and data, but does
+not issue customer tokens. Passwords, custom session tokens, Firebase/Identity
+Platform, paid enrollment and billing attachment are not used.
 
-The [official Google federation setup](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-google-federation-customers)
-requires the operator to create a Google Cloud OAuth **web** client, configure
-its exact customer-tenant federation redirect URIs, and enter its client ID and
-secret directly in Entra External Identities > All identity providers > Google.
-Select Google alone in the application's user flow; do not enable Microsoft,
-Apple, email/password or SMS alternatives. The native mobile app remains a
-separate public client with no client secret. No Google billing account, paid
-API/product or provider enrollment is authorized by this source implementation.
+The SDK owns OAuth PKCE, credential/Keychain persistence and token refresh. Its
+Google **ID token**, not its Google-services access token or plain user ID, is
+sent as the existing HTTPS API bearer credential. The established `jose`
+verifier uses Google's fixed HTTPS rotating-key endpoint and RS256, requires the
+exact web/server audience and iOS authorized party (`azp`), validates issuer,
+stable numeric subject, issued/expiry times and a maximum one-hour token lifetime.
+Both documented Google issuer spellings map to `https://accounts.google.com`.
+Email/name claims never create membership or link identities. Key-service
+unavailability is a visible 503, not a false invalid-login response.
 
-Before exposure, verify actual no-cost OAuth eligibility, the associated
-customer flow's disabled self-sign-up readback, and controlled provisioning of
-the invited social identity. Test that the intended existing Google identity
-can sign in for the first time while an unknown Google identity cannot create
-an account. Disabling sign-up can also reject an unprovisioned legitimate social
-identity; a backend invite alone does not solve this. Any provider identity
-mapping must use the verified stable subject, never an unverified email.
-Combined customer-tenant MAU usage and enforceable no-overage protection still
-require live verification before the API is exposed.
+**Exact human setup:** open https://console.cloud.google.com/auth/overview,
+select/create an unbilled project, configure Recipe Book branding/support contact
+and External audience in Testing, and add the intended trial Google accounts as
+test users. Request only basic OpenID/profile/email scopes. In Clients create
+one **iOS** OAuth client for the final signed app's exact bundle ID, and one
+**Web application** client as the backend audience. No client secret is needed
+by Recipe Book and none may be put in the app/repository/chat. Return only the
+two public client IDs, iOS reversed URL scheme and registered bundle ID.
+Google's setup: https://developers.google.com/identity/sign-in/ios/start-integrating ;
+backend-token requirements: https://developers.google.com/identity/sign-in/ios/backend-auth .
+
+Mobile non-secret build settings are `RECIPEBOOK_GOOGLE_IOS_CLIENT_ID`,
+`RECIPEBOOK_GOOGLE_SERVER_CLIENT_ID`, `RECIPEBOOK_GOOGLE_CALLBACK_SCHEME`,
+`RECIPEBOOK_GOOGLE_BUNDLE_ID` and `RECIPEBOOK_API_URL`. A typical unsuffixed bundle
+is `com.recipebook.app`, but **do not register that by assumption for SideStore**:
+inspect the actual re-signed app/profile first. The runtime rejects a registered/
+actual bundle mismatch explicitly. The reversed iOS-client scheme must remain in
+the signed app's URL types and callbacks are delegated to the SDK. Keep App
+Groups, application identifier and default Keychain access authorized through
+re-signing/refresh. The SDK includes AppCheckCore transitively but this app never
+calls its configure/debug-provider APIs or enables App Check/Firebase services.
+
+Unknown Google users may authenticate with Google, but cannot access books,
+recipes, images, imports or shopping. Their pending app UUID is unique per
+canonical issuer/subject and capped at 100 live inactive accounts globally under
+SQL serializable locks. Full capacity fails visibly; invited first sign-ins
+bypass pending capacity. This is not creation of an app-owned IdP identity.
+Operators must verify the stable Google subject before issuing an invitation;
+Google Console test-user access is a separate gate, not a book/app invitation.
+
+Local sign-out clears SDK credentials; it cannot invalidate a previously issued
+Google bearer token before its expiry. Every data operation still checks the live
+SQL invitation and account tombstone, so invitation revocation/account deletion
+denies even an unexpired token. Late restore/sign-in callbacks cannot revive a
+signed-out session or overwrite a newer one. Real Console consent/login, Keychain
+restore, callback routing and SideStore refresh remain physical-device gates.
 
 ## Account access and ownership
 
@@ -315,7 +335,7 @@ same file; scans ignore only files concurrently removed, not malformed content
 or other I/O errors. A DEBUG-only internal filesystem test seam exercises this
 on temporary directories without authorizing an unprovisioned production group.
 
-On the actual iPhone, test launch, hosted sign-in/PKCE callback, invite rejection,
+On the actual iPhone, test launch, Google SDK/system-browser callback, invite rejection,
 private/shared isolation, promotion/demotion/last-owner errors, image/data
 revocation, concurrent writes, paste and Instagram native share, offline/errors,
 review/save, shopping quantity/bought/already-have behavior, and SideStore

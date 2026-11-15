@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 
 public protocol AccessTokenProvider: Sendable {
-    /// Return an unexpired access token for the configured API audience, not an ID token.
+    /// Return the unexpired Google ID token for the configured backend audience, never a Google API access token.
     func accessToken() async throws -> String
 }
 

@@ -9,6 +9,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     private let auth: any AuthenticationSession
     private let inbox: SharedReelInbox
     private var currentAccount: SessionAccount?
+    private var sessionGeneration = 0
     private var bookCache: [UUID: RecipeBookCore.Book] = [:]
     private var recipeCache: [UUID: RecipeBookCore.Recipe] = [:]
     private var listCache: [UUID: RecipeBookCore.ShoppingList] = [:]
@@ -22,13 +23,16 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     }
     func loadSession() async throws -> SessionState {
         try Task.checkCancellation()
+        let generation = sessionGeneration
         guard await auth.hasSession() else { return .signedOut }
         let account: SessionAccount
         do { account = try await api.account() }
         catch let error as APIError where error.status == 401 || error.code == "account_deleted" {
+            guard generation == sessionGeneration else { throw CancellationError() }
             try await signOut()
             return .signedOut
         }
+        guard generation == sessionGeneration else { throw CancellationError() }
         if let previous = currentAccount, previous.id != account.id {
             bookCache.removeAll(); recipeCache.removeAll(); listCache.removeAll(); jobCache.removeAll(); importKeys.removeAll()
         }
@@ -39,6 +43,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         return profile.displayName.isEmpty ? .needsSetup(profile) : .signedIn(profile)
     }
     func signIn() async throws -> SessionState {
+        sessionGeneration += 1
         try await auth.signIn()
         return try await loadSession()
     }
@@ -47,6 +52,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         return try await loadSession()
     }
     func signOut() async throws {
+        sessionGeneration += 1
         try await auth.signOut()
         currentAccount = nil
         bookCache.removeAll(); recipeCache.removeAll(); listCache.removeAll(); jobCache.removeAll(); importKeys.removeAll()

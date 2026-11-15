@@ -11,12 +11,11 @@
 <key>UILaunchScreen</key><dict/>
 <key>RecipeBookAppGroup</key><string>$(RECIPEBOOK_APP_GROUP)</string>
 <key>RecipeBookAPIURL</key><string>$(RECIPEBOOK_API_URL)</string>
-<key>RecipeBookAuthorizeURL</key><string>$(RECIPEBOOK_AUTHORIZE_URL)</string>
-<key>RecipeBookTokenURL</key><string>$(RECIPEBOOK_TOKEN_URL)</string>
-<key>RecipeBookClientID</key><string>$(RECIPEBOOK_CLIENT_ID)</string>
-<key>RecipeBookScopes</key><string>$(RECIPEBOOK_SCOPES)</string>
-<key>RecipeBookKeychainService</key><string>$(PRODUCT_BUNDLE_IDENTIFIER).oauth</string>
+<key>GIDClientID</key><string>$(RECIPEBOOK_GOOGLE_IOS_CLIENT_ID)</string>
+<key>GIDServerClientID</key><string>$(RECIPEBOOK_GOOGLE_SERVER_CLIENT_ID)</string>
+<key>RecipeBookGoogleCallbackScheme</key><string>$(RECIPEBOOK_GOOGLE_CALLBACK_SCHEME)</string>
+<key>RecipeBookGoogleBundleID</key><string>$(RECIPEBOOK_GOOGLE_BUNDLE_ID)</string>
 <key>CFBundleURLTypes</key><array><dict>
 <key>CFBundleURLSchemes</key><array><string>recipebook</string></array>
-</dict></array>
+</dict><dict><key>CFBundleURLSchemes</key><array><string>$(RECIPEBOOK_GOOGLE_CALLBACK_SCHEME)</string></array></dict></array>
 </dict></plist>

@@ -18,6 +18,8 @@ settings:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: ""
     RECIPEBOOK_APP_GROUP: group.com.recipebook.shared
+    RECIPEBOOK_GOOGLE_CALLBACK_SCHEME: recipebook-unconfigured-google
+    RECIPEBOOK_GOOGLE_BUNDLE_ID: "$(PRODUCT_BUNDLE_IDENTIFIER)"
 targets:
   RecipeBook:
     type: application

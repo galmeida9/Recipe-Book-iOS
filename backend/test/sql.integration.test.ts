@@ -2,13 +2,70 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { query, serializable, database } from "../src/database.js";
-import { RecipeBookService } from "../src/service.js";
+import { RecipeBookService, pendingAccountLimit } from "../src/service.js";
+import { googleIssuer } from "../src/auth.js";
 import { AppError } from "../src/contracts.js";
 import { ImportService, processImport, importDelivery, failImportDelivery } from "../src/imports.js";
 import { ApifyProvider, type ProviderBudget, type ProviderRun } from "../src/apify.js";
 import { readRecipeImage } from "../src/images.js";
 
 const enabled = process.env["RUN_SQL_INTEGRATION"] === "true";
+async function verifyGoogleAccountLifecycle() {
+  const subject = () => BigInt("0x" + randomUUID().replaceAll("-", "")).toString();
+  const subjects = [subject(), subject(), subject(), subject()];
+  const services = subjects.map(value => new RecipeBookService({ issuer: googleIssuer, subject: value }));
+  const [pending, firstInvited, racerA, racerB] = services as [RecipeBookService, RecipeBookService, RecipeBookService, RecipeBookService];
+  const capacityIssuer = "https://capacity-fixture.invalid/" + randomUUID();
+  try {
+    const initial = await pending.me();
+    assert.equal(initial.access, "awaitingInvite");
+    assert.equal((await pending.me()).id, initial.id, "Repeated first Google login links the same pending app identity.");
+    await assert.rejects(() => pending.books(), (error: unknown) => error instanceof AppError && error.code === "invite_required");
+    await serializable(transaction => query(transaction,
+      "INSERT dbo.AccessInvites(Issuer,Subject,ExpiresAt) VALUES(@issuer,@subject,@expires)",
+      { issuer: googleIssuer, subject: subjects[0]!, expires: new Date(Date.now() + 3_600_000) }));
+    assert.equal((await pending.me()).id, initial.id);
+    assert.equal((await pending.me()).access, "active");
+    await pending.createBook({ name: "Synthetic Google private book", kind: "personal" });
+    await serializable(transaction => query(transaction,
+      "UPDATE dbo.AccessInvites SET Revoked=1 WHERE Issuer=@issuer AND Subject=@subject",
+      { issuer: googleIssuer, subject: subjects[0]! }));
+    assert.equal((await pending.me()).access, "awaitingInvite");
+    await assert.rejects(() => pending.books(), (error: unknown) => error instanceof AppError && error.code === "invite_required");
+    await serializable(transaction => query(transaction,
+      "UPDATE dbo.AccessInvites SET Revoked=0 WHERE Issuer=@issuer AND Subject=@subject",
+      { issuer: googleIssuer, subject: subjects[0]! }));
+    await pending.deleteAccount();
+    await assert.rejects(() => pending.me(), (error: unknown) => error instanceof AppError && error.code === "account_deleted");
+    await serializable(async transaction => {
+      const count = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.Accounts WHERE Active=0 AND Deleted=0");
+      const fill = pendingAccountLimit - count[0]!.count - 1;
+      assert.ok(fill >= 0, "Owned test database lacks space for the pending-capacity test.");
+      for (let index = 0; index < fill; index++) {
+        await query(transaction, "INSERT dbo.Accounts(Id,Issuer,Subject,Active) VALUES(@id,@issuer,@subject,0)",
+          { id: randomUUID(), issuer: capacityIssuer, subject: String(index) });
+      }
+    });
+    const outcomes = await Promise.allSettled([racerA.me(), racerB.me()]);
+    assert.equal(outcomes.filter(value => value.status === "fulfilled").length, 1);
+    const rejected = outcomes.find(value => value.status === "rejected");
+    assert.ok(rejected?.status === "rejected" && rejected.reason instanceof AppError && rejected.reason.code === "onboarding_capacity");
+    await serializable(transaction => query(transaction,
+      "INSERT dbo.AccessInvites(Issuer,Subject,ExpiresAt) VALUES(@issuer,@subject,@expires)",
+      { issuer: googleIssuer, subject: subjects[1]!, expires: new Date(Date.now() + 3_600_000) }));
+    assert.equal((await firstInvited.me()).access, "active", "An invited first Google login must work even at pending capacity.");
+  } finally {
+    await serializable(async transaction => {
+      await query(transaction, "DELETE dbo.Accounts WHERE Issuer=@issuer", { issuer: capacityIssuer });
+      for (const value of subjects) {
+        await query(transaction, "DELETE dbo.Books WHERE Id IN(SELECT m.BookId FROM dbo.Memberships m JOIN dbo.Accounts a ON a.Id=m.UserId WHERE a.Issuer=@issuer AND a.Subject=@subject)",
+          { issuer: googleIssuer, subject: value });
+        await query(transaction, "DELETE dbo.Accounts WHERE Issuer=@issuer AND Subject=@subject", { issuer: googleIssuer, subject: value });
+        await query(transaction, "DELETE dbo.AccessInvites WHERE Issuer=@issuer AND Subject=@subject", { issuer: googleIssuer, subject: value });
+      }
+    });
+  }
+}
 test("SQL: member isolation, optimistic writes, last-owner race and account departure are transactional", { skip: !enabled }, async () => {
   const issuer = "https://test.invalid/" + randomUUID();
   const names = ["alice", "bob", "outsider"];
@@ -39,6 +96,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   }
   const provider = new FixtureProvider();
   try {
+    await verifyGoogleAccountLifecycle();
     await serializable(async transaction => {
       for (const principal of principals) {
         await query(transaction, "INSERT dbo.AccessInvites(Issuer,Subject,ExpiresAt) VALUES(@issuer,@subject,@expires)",

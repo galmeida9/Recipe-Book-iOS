@@ -8,10 +8,10 @@ param namePrefix string
 @description('Verified Azure Entra administrator object ID, never an Apple/GitHub identity.')
 param sqlAdministratorObjectId string
 param sqlAdministratorName string
-param oidcIssuer string
-param oidcAudience string
-param oidcJwksUrl string
-param oidcScope string
+@description('Public Google web-application OAuth client ID used as the exact API ID-token audience.')
+param googleServerClientId string
+@description('Public Google iOS OAuth client ID accepted as the ID-token authorized party.')
+param googleIosClientId string
 
 var suffix = uniqueString(resourceGroup().id)
 var storageName = '${namePrefix}${suffix}'
@@ -118,10 +118,8 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'BLOB_SERVICE_URL', value: storage.properties.primaryEndpoints.blob }
         { name: 'SQL_SERVER', value: sqlBackend.outputs.sqlServerHostname }
         { name: 'SQL_DATABASE', value: 'RecipeBook' }
-        { name: 'OIDC_ISSUER', value: oidcIssuer }
-        { name: 'OIDC_AUDIENCE', value: oidcAudience }
-        { name: 'OIDC_JWKS_URL', value: oidcJwksUrl }
-        { name: 'OIDC_SCOPE', value: oidcScope }
+        { name: 'GOOGLE_SERVER_CLIENT_ID', value: googleServerClientId }
+        { name: 'GOOGLE_IOS_CLIENT_ID', value: googleIosClientId }
         { name: 'APIFY_ENABLED', value: 'false' }
       ]
     }

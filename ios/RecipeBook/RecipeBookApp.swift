@@ -2,6 +2,7 @@ import SwiftUI
 import RecipeBookCore
 import RecipeBookPresentation
 import RecipeBookUI
+import RecipeBookAuth
 
 @main
 struct RecipeBookApp: App {
@@ -43,6 +44,7 @@ struct RecipeBookApp: App {
             }
         }
         .onOpenURL { url in
+            if GoogleAuth.handle(url) { return }
             if let reel = ReelURL.canonicalize(url) { incomingReel = reel }
             else if url.scheme == "recipebook", url.host == "import" { loadInbox() }
         }
