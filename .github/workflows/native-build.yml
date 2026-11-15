@@ -20,11 +20,21 @@ on:
         required: true
         type: boolean
         default: false
+      installation_check_only:
+        description: 'Build only a clearly labeled unsigned installation check for an existing private draft'
+        required: true
+        type: boolean
+        default: false
+      installation_check_draft_id:
+        description: 'Owned existing draft release ID; only used by installation-check-only mode'
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
   compile:
-    if: github.event_name == 'push' || inputs.licensed_host_approved
+    if: github.event_name == 'push' || (inputs.licensed_host_approved && !inputs.installation_check_only)
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -83,3 +93,11 @@ jobs:
           name: unsigned-native-build-not-installable
           path: build/Build/Products/Debug-iphoneos/RecipeBook.app
           retention-days: 1
+  installation:
+    if: github.event_name == 'workflow_dispatch' && inputs.licensed_host_approved && inputs.installation_check_only && inputs.installation_check_draft_id != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/installation-check.yml
+    with:
+      licensed_host_approved: ${{ inputs.licensed_host_approved }}
+      draft_release_id: ${{ inputs.installation_check_draft_id }}

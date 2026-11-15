@@ -182,6 +182,39 @@ SQL invitation and account tombstone, so invitation revocation/account deletion
 denies even an unexpired token. Late restore/sign-in callbacks cannot revive a
 signed-out session or overwrite a newer one. Real Console consent/login, Keychain
 restore, callback routing and SideStore refresh remain physical-device gates.
+The first trial targets one known signed bundle/iOS client. Different SideStore
+teams may produce different bundle IDs and need their own Google iOS registrations
+and corresponding authorized-client configuration before multi-team distribution;
+do not share Apple credentials or pretend one client covers rewritten identifiers.
+
+## Private installation-check delivery
+
+An installation-check IPA is explicitly **not a usable authenticated trial**.
+Its DEBUG bootstrap displays the actual signed bundle ID and shared-group
+authorization result without connecting to Google/the API. This lets SideStore
+signing and Google iOS registration proceed while cloud configuration is finished.
+Keep the embedded share extension; unsupported profiles remain a visible gate.
+
+Only a manual standard-macOS build may upload this unsigned package (maximum
+64 MiB) and its SHA256 file to a verified, existing **draft** release tied to the
+exact source commit. It contains no provisioning profiles/signing keys. No
+public release, Actions artifact, IPA log payload or paid runner is used.
+GitHub documents each release asset below 2 GiB with no total/bandwidth limit:
+https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases .
+Only push-access users can list drafts:
+https://docs.github.com/en/rest/releases/releases .
+The account creates the draft because GITHUB_TOKEN cannot create releases whose
+target changes workflows; the manual job only uploads to the guarded existing
+draft, with scoped contents-write permission and no overwrite.
+
+The owner signs into GitHub in Safari, downloads the draft IPA to Files, then
+imports that local file into SideStore. A draft URL is not a public SideStore
+download URL; do not embed GitHub tokens or make the release public. SideStore
+handles the user's Apple login/signing locally. Verify both profiles/entitlements
+after re-signing and test the device; an unsigned layout or Simulator pass is
+not installation proof. `Verify-Ipa.ps1 -UnsignedInstallationCheck` checks only
+the explicitly named unsigned diagnostic; normal verification still requires
+both profiles and subsequent cryptographic/device checks.
 
 ## Account access and ownership
 

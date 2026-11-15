@@ -1,0 +1,68 @@
+name: Private draft installation check
+on:
+  workflow_call:
+    inputs:
+      draft_release_id:
+        description: 'Existing owned draft release ID for this exact source commit; never publish'
+        required: true
+        type: string
+      licensed_host_approved:
+        description: 'Build on the standard licensed Apple-hardware runner, no signing secrets'
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  package:
+    if: inputs.licensed_host_approved
+    runs-on: macos-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify existing private draft and exact source before building
+        run: |
+          [[ "$DRAFT_RELEASE_ID" =~ ^[0-9]+$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft.json
+          node -e 'const r=require("./draft.json"); if(!r.draft || r.published_at || r.assets.length || r.target_commitish!==process.env.GITHUB_SHA || r.tag_name!=="installation-check-"+process.env.GITHUB_SHA.slice(0,12)) throw Error("Draft/source/empty-asset guard failed");'
+      - name: Select newest installed Xcode without downloading SDKs
+        run: |
+          python3 <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob("/Applications/Xcode*.app"):
+              developer = app + "/Contents/Developer"
+              output = subprocess.check_output([developer + "/usr/bin/xcodebuild", "-version"], text=True)
+              version = re.search(r"Xcode ([0-9.]+)", output).group(1)
+              candidates.append((tuple(map(int, version.split("."))), developer))
+          if not candidates:
+              raise RuntimeError("No installed licensed Xcode")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("DEVELOPER_DIR=" + max(candidates)[1] + "\n")
+          PY
+      - name: Build unsigned installation diagnostic with intact extension
+        run: |
+          xcodebuild -version
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO RECIPEBOOK_INSTALLATION_CHECK=YES build
+          APP=build/Build/Products/Debug-iphoneos/RecipeBook.app
+          test -f "$APP/RecipeBook"
+          test -f "$APP/PlugIns/RecipeBookShare.appex/RecipeBookShare"
+          test "$(plutil -extract RecipeBookInstallationCheck raw -o - "$APP/Info.plist")" = YES
+          if find "$APP" \( -name embedded.mobileprovision -o -name '*.p12' -o -name '*.p8' \) | grep -q .; then exit 1; fi
+          mkdir -p installation-payload/Payload
+          ditto "$APP" installation-payload/Payload/RecipeBook.app
+          (cd installation-payload && ditto -c -k --keepParent Payload ../RecipeBook-installation-check.ipa)
+          node -e 'const n=require("fs").statSync("RecipeBook-installation-check.ipa").size;if(n<=0||n>64*1024*1024)throw Error("IPA exceeds 64 MiB bound");console.log("Unsigned installation-check IPA bytes:",n);'
+          shasum -a 256 RecipeBook-installation-check.ipa > RecipeBook-installation-check.ipa.sha256
+      - name: Upload only the bounded unsigned diagnostic to the verified draft
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft.json
+          node -e 'const r=require("./draft.json");if(!r.draft||r.published_at||r.assets.length||r.target_commitish!==process.env.GITHUB_SHA)throw Error("Draft changed before upload");'
+          TAG=$(node -p 'require("./draft.json").tag_name')
+          gh release upload "$TAG" RecipeBook-installation-check.ipa RecipeBook-installation-check.ipa.sha256 --repo "$GITHUB_REPOSITORY"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" --jq '{draft, published_at, html_url, assets: [.assets[] | {name,size,digest}]}'
