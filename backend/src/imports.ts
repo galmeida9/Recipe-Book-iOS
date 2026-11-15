@@ -1,0 +1,256 @@
+import { randomUUID } from "node:crypto";
+import type sql from "mssql";
+import { z } from "zod";
+import { AppError, assertVersion, canonicalReelURL, draftSchema, invariant, type ImportJob } from "./contracts.js";
+import { query, serializable } from "./database.js";
+import { account, bookAccess, RecipeBookService } from "./service.js";
+import { ApifyProvider, approvedProvider, type ProviderBudget } from "./apify.js";
+import { evidenceSchema, evidenceToReview } from "./import-evidence.js";
+
+export function reserveBudget(spent: number, reserved: number, cap: number, amount: number): number {
+  invariant([spent, reserved, cap, amount].every(Number.isSafeInteger) && spent >= 0 && reserved >= 0 && amount > 0,
+    503, "budget_invalid", "Import budget accounting is invalid.");
+  invariant(spent + reserved + amount <= cap, 429, "budget_exhausted", "The shared monthly import allowance is exhausted.");
+  return reserved + amount;
+}
+interface JobRow {
+  id: string; userId: string; sourceURL: string; state: ImportJob["state"]; draft: string | null;
+  evidence: string | null; error: string | null; version: number; createdAt: Date;
+  recipeId: string | null; bookId: string | null; budgetMonth: string; reservedMicros: number;
+  providerRunId: string | null; dispatchStarted: boolean; dispatchStartedAt: Date | null; deadline: Date;
+}
+const columns = `CONVERT(varchar(36),Id) AS id,CONVERT(varchar(36),UserId) AS userId,SourceURL AS sourceURL,
+ State AS state,Draft AS draft,Evidence AS evidence,Error AS error,Version AS version,CreatedAt AS createdAt,
+ CONVERT(varchar(36),CompletedRecipeId) AS recipeId,CONVERT(varchar(36),CompletedBookId) AS bookId,
+ BudgetMonth AS budgetMonth,ReservedMicros AS reservedMicros,ProviderRunId AS providerRunId,
+ DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline`;
+function job(row: JobRow): ImportJob {
+  return {
+    id: row.id.toLowerCase(), sourceURL: row.sourceURL, state: row.state, version: row.version,
+    draft: row.draft === null ? null : draftSchema.parse(JSON.parse(row.draft)),
+    evidence: row.evidence === null ? null : evidenceSchema.parse(JSON.parse(row.evidence)),
+    error: row.error, createdAt: row.createdAt.toISOString(),
+    recipeId: row.recipeId?.toLowerCase() ?? null, bookId: row.bookId?.toLowerCase() ?? null
+  };
+}
+async function getJob(transaction: sql.Transaction, id: string, userId: string): Promise<JobRow> {
+  const rows = await query<JobRow>(transaction,
+    `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id AND UserId=@userId`, { id, userId });
+  invariant(rows[0], 404, "import_not_found", "Import job not found.");
+  return rows[0];
+}
+async function reserve(transaction: sql.Transaction, budget: ProviderBudget): Promise<void> {
+  const rows = await query<{ spent: number; reserved: number; cap: number }>(transaction,
+    "SELECT SpentMicros AS spent,ReservedMicros AS reserved,CapMicros AS cap FROM dbo.ImportBudget WITH(UPDLOCK,HOLDLOCK) WHERE Month=@month",
+    { month: budget.month });
+  if (!rows[0]) {
+    reserveBudget(budget.spentMicros, 0, budget.capMicros, budget.reserveMicros);
+    await query(transaction, "INSERT dbo.ImportBudget(Month,CapMicros,SpentMicros,ReservedMicros) VALUES(@month,@cap,@spent,@reserve)",
+      { month: budget.month, cap: budget.capMicros, spent: budget.spentMicros, reserve: budget.reserveMicros });
+  } else {
+    const spent = Math.max(rows[0].spent, budget.spentMicros);
+    const cap = Math.min(rows[0].cap, budget.capMicros);
+    const reserved = reserveBudget(spent, rows[0].reserved, cap, budget.reserveMicros);
+    await query(transaction, "UPDATE dbo.ImportBudget SET SpentMicros=@spent,ReservedMicros=@reserved,CapMicros=@cap WHERE Month=@month",
+      { month: budget.month, cap, spent, reserved });
+  }
+}
+
+export class ImportService {
+  constructor(private readonly service: RecipeBookService, private readonly provider = new ApifyProvider()) {}
+  list() {
+    return this.service.execute(async (transaction, userId) => (await query<JobRow>(transaction,
+      `SELECT TOP(100) ${columns} FROM dbo.ImportJobs WHERE UserId=@userId AND State<>'discarded' ORDER BY CreatedAt DESC`, { userId })).map(job));
+  }
+  get(id: string) { return this.service.execute(async (transaction, userId) => job(await getJob(transaction, id, userId))); }
+  async create(input: unknown, key: string) {
+    const { sourceURL: raw } = z.object({ sourceURL: z.string().max(2048) }).strict().parse(input);
+    const sourceURL = canonicalReelURL(raw);
+    // Check persisted idempotency before making even uncharged provider calls.
+    const existing = await this.service.execute(async (transaction, userId) => {
+      const requests = await query<{ jobId: string; sourceURL: string }>(transaction,
+        "SELECT CONVERT(varchar(36),JobId) AS jobId,SourceURL AS sourceURL FROM dbo.ImportRequests WHERE UserId=@userId AND IdempotencyKey=@key", { userId, key });
+      if (!requests[0]) return null;
+      invariant(requests[0].sourceURL === sourceURL, 409, "idempotency_conflict", "This idempotency key belongs to a different Reel.");
+      return job(await getJob(transaction, requests[0].jobId, userId));
+    });
+    if (existing) return existing;
+    const budget = await this.provider.budget();
+    return this.service.execute(async (transaction, userId) => {
+      const requests = await query<{ jobId: string; sourceURL: string }>(transaction,
+        "SELECT CONVERT(varchar(36),JobId) AS jobId,SourceURL AS sourceURL FROM dbo.ImportRequests WITH(UPDLOCK,HOLDLOCK) WHERE UserId=@userId AND IdempotencyKey=@key", { userId, key });
+      if (requests[0]) {
+        invariant(requests[0].sourceURL === sourceURL, 409, "idempotency_conflict", "This idempotency key belongs to a different Reel.");
+        return job(await getJob(transaction, requests[0].jobId, userId));
+      }
+      const duplicate = await query<JobRow>(transaction,
+        `SELECT TOP(1) ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK)
+        WHERE UserId=@userId AND SourceURL=@sourceURL AND BudgetMonth=@month ORDER BY CreatedAt DESC`,
+        { userId, sourceURL, month: budget.month });
+      if (duplicate[0]) {
+        await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)",
+          { userId, key, id: duplicate[0].id, sourceURL });
+        return job(duplicate[0]);
+      }
+      const counts = await query<{ count: number }>(transaction,
+        "SELECT COUNT(*) AS count FROM dbo.ImportJobs WHERE UserId=@userId AND State IN('queued','running')", { userId });
+      invariant(counts[0]!.count < 3, 429, "import_limit", "At most three imports may be in progress.");
+      await reserve(transaction, budget);
+      const id = randomUUID();
+      const deadline = new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime()));
+      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline)
+        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline)`,
+        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline });
+      await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)", { userId, key, id, sourceURL });
+      return job(await getJob(transaction, id, userId));
+    });
+  }
+  async retry(id: string, version: number) {
+    const budget = await this.provider.budget();
+    return this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      assertVersion(row.version, version);
+      invariant(row.state === "failed" && !row.dispatchStarted, 409, "retry_unsafe", "This job cannot be retried because a provider charge may already exist.");
+      const config = approvedProvider();
+      invariant(config.reserveMicros === row.reservedMicros, 409, "provider_changed", "The approved spending cap changed.");
+      await reserve(transaction, budget);
+      await query(transaction, `UPDATE dbo.ImportJobs SET State='queued',Error=NULL,Version=Version+1,Deadline=@deadline WHERE Id=@id`,
+        { id, deadline: new Date(Date.now() + 10 * 60_000) });
+      await query(transaction, "UPDATE dbo.ImportJobs SET BudgetMonth=@month WHERE Id=@id", { id, month: budget.month });
+      return job(await getJob(transaction, id, userId));
+    });
+  }
+  discard(id: string, version: number) {
+    return this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      assertVersion(row.version, version);
+      invariant(!["queued", "running", "completed"].includes(row.state), 409, "import_busy", "Only review drafts or failed jobs can be discarded.");
+      await query(transaction, "UPDATE dbo.ImportJobs SET State='discarded',Draft=NULL,Evidence=NULL,Version=Version+1 WHERE Id=@id", { id });
+      return { id: userId };
+    });
+  }
+  approve(id: string, bookId: string, input: unknown, version: number) {
+    const draft = draftSchema.parse(input);
+    return this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      assertVersion(row.version, version);
+      invariant(row.state === "review", 409, "review_required", "This job is not ready for review.");
+      await bookAccess(transaction, bookId, userId);
+      const counts = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.Recipes WHERE BookId=@bookId", { bookId });
+      invariant(counts[0]!.count < 1000, 409, "recipe_limit", "A book can contain at most 1000 recipes.");
+      const recipeId = randomUUID();
+      await query(transaction, "INSERT dbo.Recipes(Id,BookId,AuthorId,Draft) VALUES(@id,@bookId,@userId,@draft)",
+        { id: recipeId, bookId, userId, draft: JSON.stringify(draft) });
+      await query(transaction, `UPDATE dbo.ImportJobs SET State='completed',CompletedRecipeId=@recipeId,
+        CompletedBookId=@bookId,Version=Version+1 WHERE Id=@id`, { id, recipeId, bookId });
+      return { id: recipeId, bookId, authorId: userId, draft, version: 1 };
+    });
+  }
+}
+
+export async function importStillActive(id: string): Promise<boolean> {
+  return serializable(async transaction => (await query<{ id: string }>(transaction,
+    "SELECT CONVERT(varchar(36),Id) AS id FROM dbo.ImportJobs WHERE Id=@id AND State IN('queued','running')", { id })).length > 0);
+}
+export async function failImportDelivery(id: string, provider = new ApifyProvider()): Promise<void> {
+  const row = await serializable(async transaction => (await query<JobRow>(transaction,
+    `SELECT ${columns} FROM dbo.ImportJobs WHERE Id=@id AND State IN('queued','running')`, { id }))[0]);
+  if (!row) return;
+  if (row.providerRunId) {
+    try { await provider.abort(row.providerRunId); }
+    catch (error) {
+      await finishImport(row, null, null, "Import delivery retries were exhausted and provider cancellation could not be confirmed. The full spending cap remains accounted.");
+      throw error;
+    }
+  }
+  await finishImport(row, null, null, "Import queue delivery retries were exhausted. No new charged job was started.");
+}
+
+export async function processImport(id: string, provider = new ApifyProvider()): Promise<void> {
+  const action = await serializable(async transaction => {
+    const rows = await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id });
+    const row = rows[0];
+    if (!row || !["queued", "running"].includes(row.state)) return null;
+    const identities = await query<{ issuer: string; subject: string }>(transaction,
+      "SELECT Issuer AS issuer,Subject AS subject FROM dbo.Accounts WHERE Id=@userId AND Active=1", { userId: row.userId });
+    let allowed = false;
+    if (identities[0]) {
+      const invitations = await query<{ count: number }>(transaction,
+        `SELECT COUNT(*) AS count FROM dbo.AccessInvites WHERE Issuer=@issuer AND Subject=@subject
+        AND Revoked=0 AND ExpiresAt>SYSUTCDATETIME()`, { ...identities[0] });
+      allowed = invitations[0]!.count > 0;
+    }
+    if (!allowed || row.deadline.getTime() <= Date.now()) return { kind: "expired" as const, row };
+    if (row.providerRunId) return { kind: "poll" as const, row };
+    if (row.dispatchStarted) {
+      if ((row.dispatchStartedAt?.getTime() ?? 0) < Date.now() - 60_000) return { kind: "ambiguous" as const, row };
+      return null;
+    }
+    approvedProvider();
+    // Commit dispatch intent before the charged POST. A crash/timeout cannot
+    // trigger another POST; unknown outcomes consume the full reservation.
+    await query(transaction, `UPDATE dbo.ImportJobs SET DispatchStarted=1,DispatchStartedAt=SYSUTCDATETIME(),
+      State='running',Version=Version+1 WHERE Id=@id`, { id });
+    return { kind: "start" as const, row };
+  });
+  if (!action) return;
+  if (action.kind === "expired" || action.kind === "ambiguous") {
+    if (action.row.providerRunId) {
+      try { await provider.abort(action.row.providerRunId); }
+      catch (error) {
+        await finishImport(action.row, null, null, "Import expired and provider cancellation could not be confirmed. The full spending cap remains accounted.");
+        throw error;
+      }
+    }
+    await finishImport(action.row, null, null, action.kind === "ambiguous"
+      ? "Provider dispatch outcome is unknown. No automatic retry was attempted."
+      : "Import expired or app access was revoked.");
+    return;
+  }
+  if (action.kind === "start") {
+    let run;
+    try { run = await provider.start(action.row.sourceURL, action.row.reservedMicros); }
+    catch (error) {
+      await finishImport(action.row, null, null, "Provider dispatch failed or its result is unknown. No automatic retry was attempted.");
+      throw error;
+    }
+    await serializable(async transaction => {
+      const rows = await query<{ state: ImportJob["state"] }>(transaction,
+        "SELECT State AS state FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id", { id });
+      if (rows[0]?.state !== "running") {
+        await provider.abort(run.id);
+        return;
+      }
+      await query(transaction, "UPDATE dbo.ImportJobs SET ProviderRunId=@runId,Version=Version+1 WHERE Id=@id",
+        { id, runId: run.id });
+    });
+    return;
+  }
+  const run = await provider.run(action.row.providerRunId!);
+  if (["READY", "RUNNING", "TIMING-OUT", "ABORTING"].includes(run.status)) return;
+  if (run.status !== "SUCCEEDED") {
+    await finishImport(action.row, null, null, `Provider run ended with ${run.status}.`);
+    return;
+  }
+  try {
+    const evidence = await provider.evidence(run);
+    const draft = evidenceToReview(evidence, action.row.sourceURL);
+    await finishImport(action.row, JSON.stringify(draft), JSON.stringify(evidence), null);
+  } catch (error) {
+    const message = error instanceof AppError ? error.message : "Provider evidence could not be validated. Review is unavailable.";
+    await finishImport(action.row, null, null, message);
+    throw error;
+  }
+}
+async function finishImport(row: JobRow, draft: string | null, evidence: string | null, error: string | null): Promise<void> {
+  await serializable(async transaction => {
+    const current = (await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id: row.id }))[0];
+    if (!current || !["queued", "running"].includes(current.state)) return;
+    await query(transaction, `UPDATE dbo.ImportJobs SET State=@state,Draft=@draft,Evidence=@evidence,Error=@error,Version=Version+1 WHERE Id=@id`,
+      { id: row.id, state: error ? "failed" : "review", draft, evidence, error });
+    // Conservative settlement: reserve the entire hard cap as spent even if the
+    // actor used less, because retrieval/storage and unknown outcomes can lag.
+    await query(transaction, `UPDATE dbo.ImportBudget SET ReservedMicros=ReservedMicros-@reserve,
+      SpentMicros=SpentMicros+@reserve WHERE Month=@month`, { month: current.budgetMonth, reserve: current.reservedMicros });
+  });
+}

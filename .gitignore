@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.build/
+.swiftpm/
+local.settings.json
+.env
+*.p12
+*.mobileprovision
+*.ipa
+*.xip
+*.key
+*.xcuserstate
+DerivedData/

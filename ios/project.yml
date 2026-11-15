@@ -1,0 +1,49 @@
+name: RecipeBook
+options:
+  bundleIdPrefix: com.recipebook
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  RecipeBookCore:
+    path: ..
+  RecipeBookUI:
+    path: RecipeBookUI
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""
+    RECIPEBOOK_APP_GROUP: group.com.recipebook.shared
+targets:
+  RecipeBook:
+    type: application
+    platform: iOS
+    sources: [RecipeBook]
+    dependencies:
+      - package: RecipeBookCore
+        product: RecipeBookCore
+      - package: RecipeBookCore
+        product: RecipeBookAuth
+      - package: RecipeBookUI
+        product: RecipeBookUI
+      - package: RecipeBookUI
+        product: RecipeBookPresentation
+      - target: RecipeBookShare
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.recipebook.app
+        INFOPLIST_FILE: RecipeBook/Info.plist
+        CODE_SIGN_ENTITLEMENTS: RecipeBook/RecipeBook.entitlements
+  RecipeBookShare:
+    type: app-extension
+    platform: iOS
+    sources: [RecipeBookShare]
+    dependencies:
+      - package: RecipeBookCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.recipebook.app.share
+        INFOPLIST_FILE: RecipeBookShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: RecipeBookShare/RecipeBookShare.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES

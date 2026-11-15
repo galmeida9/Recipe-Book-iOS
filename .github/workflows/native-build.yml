@@ -1,0 +1,40 @@
+name: Native source gate (manual)
+on:
+  push:
+    branches: ['galmeida9-recipe-book-foundation']
+    paths: ['ios/**', 'Package.swift', '.github/workflows/native-build.yml']
+  workflow_dispatch:
+    inputs:
+      licensed_host_approved:
+        description: 'I authorize this licensed Apple-hardware build host; unsigned build is not on-device proof'
+        required: true
+        type: boolean
+        default: false
+      upload_artifact:
+        description: 'Upload unsigned app for one day (not installable/device proof)'
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  compile:
+    if: github.event_name == 'push' || inputs.licensed_host_approved
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Portable core tests
+        run: swift test
+      - name: Portable presentation tests
+        run: swift test --package-path ios/RecipeBookUI
+      - name: Build app and intact extension without signing
+        run: |
+          xcodebuild -version
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+          test -f build/Build/Products/Debug-iphoneos/RecipeBook.app/PlugIns/RecipeBookShare.appex/RecipeBookShare
+      - uses: actions/upload-artifact@v4
+        if: inputs.upload_artifact
+        with:
+          name: unsigned-native-build-not-installable
+          path: build/Build/Products/Debug-iphoneos/RecipeBook.app
+          retention-days: 1

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>Recipe Book</string>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>UILaunchScreen</key><dict/>
+<key>RecipeBookAppGroup</key><string>$(RECIPEBOOK_APP_GROUP)</string>
+<key>RecipeBookAPIURL</key><string>$(RECIPEBOOK_API_URL)</string>
+<key>RecipeBookAuthorizeURL</key><string>$(RECIPEBOOK_AUTHORIZE_URL)</string>
+<key>RecipeBookTokenURL</key><string>$(RECIPEBOOK_TOKEN_URL)</string>
+<key>RecipeBookClientID</key><string>$(RECIPEBOOK_CLIENT_ID)</string>
+<key>RecipeBookScopes</key><string>$(RECIPEBOOK_SCOPES)</string>
+<key>RecipeBookKeychainService</key><string>$(PRODUCT_BUNDLE_IDENTIFIER).oauth</string>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLSchemes</key><array><string>recipebook</string></array>
+</dict></array>
+</dict></plist>
