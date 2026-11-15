@@ -282,6 +282,13 @@ connected; external actions fail rather than pretend to succeed. Native XCTest
 captures sign-in, library, recipe detail and shopping locally in its result
 bundle, with PNG exports bounded to 10 MiB. Exports are not uploaded while the
 account storage cap/headroom gate remains unverified.
+Native run `43755557279` at `4d90d4e` passed on Xcode 26.6: five Core
+tests (including group-resolution/metadata cases), fifteen presentation tests,
+and six native tests including the four-screen capture. The unsigned device
+app retained its share extension. The local export produced exactly four PNGs,
+787,255 bytes combined; the run uploaded zero artifacts. These ephemeral runner
+images were not transferred to the user. Capture must run again after verified
+storage-cap/headroom approval before screenshots can be retained and shown.
 
 On the actual iPhone, test launch, hosted sign-in/PKCE callback, invite rejection,
 private/shared isolation, promotion/demotion/last-owner errors, image/data
