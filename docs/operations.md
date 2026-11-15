@@ -32,8 +32,12 @@ The first corrected host run passed 3 Core Swift Testing checks, 15 presentation
 XCTest checks, and the unsigned app/extension build using Xcode 26.6/iOS SDK
 26.5. Its Simulator test initially failed because the extension built both
 architectures while its package dependency built only the active architecture;
-Debug now uses the standard active-architecture setting consistently. Native
-validation must finish before claiming Simulator or iOS 27 API-path success.
+Debug now uses the standard active-architecture setting consistently. Run
+`43752216145` subsequently passed all 3 Core tests, 15 presentation tests and
+5 native Simulator tests (4 adapter checks plus unconfigured launch). Artifact
+upload was skipped and the run has zero uploaded artifacts. The host's newest
+installed Xcode was 26.6, so the guarded iOS 27-specific APIs remain uncompiled.
+Simulator success does not prove signing, Google federation or iPhone operation.
 
 ## Local backend
 
@@ -69,6 +73,7 @@ installation. No SDK needs to be installed just to run TypeScript tests.
 
 GitHub login is independent of Azure login. The verified native Windows CLI is
 `C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd` (2.92.0 when installed).
+This is **operator Azure administration**, not customer sign-in. Operator
 Microsoft credentials/MFA are entered directly in Microsoft's browser/broker:
 
 ```powershell
@@ -129,6 +134,34 @@ Deployment prerequisites:
   only required SELECT/INSERT/UPDATE/DELETE permissions via a contained SQL user.
 - Code package deployment, queue/host identity permissions and startup checks.
 - Populate non-secret mobile configuration keys; secrets stay in Key Vault.
+
+## Google-only customer sign-in
+
+Customers use **Google only**, not a Microsoft account, Apple sign-in or native
+email/password authentication. The app opens the secure iOS system authentication
+session with PKCE into the branded customer tenant's Google federation; Azure
+still issues the API access token and persists the separate app account/data.
+Do not accept a Google ID token as an API bearer token or infer app access from
+an email claim. No customer identity provider has been configured or exposed yet.
+
+The [official Google federation setup](https://learn.microsoft.com/en-us/entra/external-id/customers/how-to-google-federation-customers)
+requires the operator to create a Google Cloud OAuth **web** client, configure
+its exact customer-tenant federation redirect URIs, and enter its client ID and
+secret directly in Entra External Identities > All identity providers > Google.
+Select Google alone in the application's user flow; do not enable Microsoft,
+Apple, email/password or SMS alternatives. The native mobile app remains a
+separate public client with no client secret. No Google billing account, paid
+API/product or provider enrollment is authorized by this source implementation.
+
+Before exposure, verify actual no-cost OAuth eligibility, the associated
+customer flow's disabled self-sign-up readback, and controlled provisioning of
+the invited social identity. Test that the intended existing Google identity
+can sign in for the first time while an unknown Google identity cannot create
+an account. Disabling sign-up can also reject an unprovisioned legitimate social
+identity; a backend invite alone does not solve this. Any provider identity
+mapping must use the verified stable subject, never an unverified email.
+Combined customer-tenant MAU usage and enforceable no-overage protection still
+require live verification before the API is exposed.
 
 ## Account access and ownership
 
@@ -203,6 +236,10 @@ key repairs delivery without another reservation/charged POST. Duplicate queue
 deliveries poll an existing run. Poison messages visibly fail the persisted job.
 Deliveries carry the attempt's immutable deadline: stale deliveries, poison
 messages and completion callbacks cannot affect a later pre-dispatch retry.
+Authenticated import reads/submissions reconcile at most three overdue jobs,
+so an expired queue message or a quota outage cannot leave jobs queued forever.
+This occurs only during actual requests, never through an idle database timer;
+dispatched runs retain their hard provider timeout/cap and are never restarted.
 Unsafe failed jobs cannot be retried. A pre-dispatch failure can retry only with
 a new reservation and approved configuration. Evidence is preserved for manual
 review; only explicitly labelled sections are parsed. Unknown amounts/servings

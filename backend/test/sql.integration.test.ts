@@ -143,6 +143,14 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     assert.equal(starts, 2);
     await processImport(secondJob.id, provider, retryDelivery.deadline);
     assert.equal((await imports.get(secondJob.id)).state, "review");
+    const undelivered = await imports.create({ sourceURL: "https://www.instagram.com/reel/Undelivered/" }, randomUUID());
+    await serializable(transaction => query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
+      { id: undelivered.id, deadline: new Date(Date.now() - 1000) }));
+    assert.equal((await imports.get(undelivered.id)).state, "failed", "An expired queue message must not leave a job queued forever.");
+    assert.equal(starts, 2, "Lazy expiry does not restart or call the provider.");
+    const retryBudget = await serializable(transaction => query<{ spent: number; reserved: number }>(transaction,
+      "SELECT SpentMicros AS spent,ReservedMicros AS reserved FROM dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth }));
+    assert.deepEqual(retryBudget[0], { spent: 200_000, reserved: 0 });
     const promoted = await alice.changeMember(shared.id, bobId, "owner", shared.version);
     assert.ok("version" in promoted);
     shared = (await alice.books()).find(book => book.id === shared.id)!;

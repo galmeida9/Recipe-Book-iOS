@@ -56,19 +56,41 @@ async function reserve(transaction: sql.Transaction, budget: ProviderBudget): Pr
       { month: budget.month, cap, spent, reserved });
   }
 }
+async function settleReservation(transaction: sql.Transaction, row: JobRow): Promise<void> {
+  await query(transaction, `UPDATE dbo.ImportBudget SET ReservedMicros=ReservedMicros-@reserve,
+    SpentMicros=SpentMicros+@reserve WHERE Month=@month`, { month: row.budgetMonth, reserve: row.reservedMicros });
+}
+async function expireUndelivered(transaction: sql.Transaction, userId: string): Promise<void> {
+  const rows = await query<JobRow>(transaction, `SELECT TOP(3) ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK)
+    WHERE UserId=@userId AND State IN('queued','running') AND Deadline<=SYSUTCDATETIME() ORDER BY Id`, { userId });
+  for (const row of rows) {
+    await query(transaction, `UPDATE dbo.ImportJobs SET State='failed',Version=Version+1,
+      Error='Import deadline elapsed while delivery was unavailable. The full spending cap remains accounted; dispatched runs are not restarted.' WHERE Id=@id`, { id: row.id });
+    await settleReservation(transaction, row);
+  }
+}
 
 export class ImportService {
   constructor(private readonly service: RecipeBookService, private readonly provider = new ApifyProvider()) {}
   list() {
-    return this.service.execute(async (transaction, userId) => (await query<JobRow>(transaction,
-      `SELECT TOP(100) ${columns} FROM dbo.ImportJobs WHERE UserId=@userId AND State<>'discarded' ORDER BY CreatedAt DESC`, { userId })).map(job));
+    return this.service.execute(async (transaction, userId) => {
+      await expireUndelivered(transaction, userId);
+      return (await query<JobRow>(transaction,
+        `SELECT TOP(100) ${columns} FROM dbo.ImportJobs WHERE UserId=@userId AND State<>'discarded' ORDER BY CreatedAt DESC`, { userId })).map(job);
+    });
   }
-  get(id: string) { return this.service.execute(async (transaction, userId) => job(await getJob(transaction, id, userId))); }
+  get(id: string) {
+    return this.service.execute(async (transaction, userId) => {
+      await expireUndelivered(transaction, userId);
+      return job(await getJob(transaction, id, userId));
+    });
+  }
   async create(input: unknown, key: string) {
     const { sourceURL: raw } = z.object({ sourceURL: z.string().max(2048) }).strict().parse(input);
     const sourceURL = canonicalReelURL(raw);
     // Check persisted idempotency before making even uncharged provider calls.
     const existing = await this.service.execute(async (transaction, userId) => {
+      await expireUndelivered(transaction, userId);
       const requests = await query<{ jobId: string; sourceURL: string }>(transaction,
         "SELECT CONVERT(varchar(36),JobId) AS jobId,SourceURL AS sourceURL FROM dbo.ImportRequests WHERE UserId=@userId AND IdempotencyKey=@key", { userId, key });
       if (!requests[0]) return null;
@@ -260,7 +282,6 @@ async function finishImport(row: JobRow, draft: string | null, evidence: string 
       { id: row.id, state: error ? "failed" : "review", draft, evidence, error });
     // Conservative settlement: reserve the entire hard cap as spent even if the
     // actor used less, because retrieval/storage and unknown outcomes can lag.
-    await query(transaction, `UPDATE dbo.ImportBudget SET ReservedMicros=ReservedMicros-@reserve,
-      SpentMicros=SpentMicros+@reserve WHERE Month=@month`, { month: current.budgetMonth, reserve: current.reservedMicros });
+    await settleReservation(transaction, current);
   });
 }
