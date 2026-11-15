@@ -2,7 +2,7 @@ name: Native source gate (manual)
 on:
   push:
     branches: ['galmeida9-recipe-book-foundation']
-    paths: ['ios/**', 'Package.swift', '.github/workflows/native-build.yml']
+    paths: ['ios/**', 'Package.swift', '.github/workflows/native-build.yml', 'scripts/native-preview-transfer*.mjs']
   workflow_dispatch:
     inputs:
       licensed_host_approved:
@@ -12,6 +12,11 @@ on:
         default: false
       upload_artifact:
         description: 'Upload unsigned app for one day (not installable/device proof)'
+        required: true
+        type: boolean
+        default: false
+      screenshot_logs:
+        description: 'Transfer only four disclosed fixture PNGs through bounded ordinary logs; no artifacts'
         required: true
         type: boolean
         default: false
@@ -49,6 +54,8 @@ jobs:
           xcrun simctl list devices available
       - name: Portable core tests
         run: swift test
+      - name: Validate screenshot-only transfer integrity guards
+        run: node --test scripts/native-preview-transfer.test.mjs
       - name: Portable presentation tests
         run: swift test --package-path ios/RecipeBookUI
       - name: Build app and intact extension without signing
@@ -66,7 +73,10 @@ jobs:
       - name: Export requested native fixture screenshots locally on the runner
         run: |
           xcrun xcresulttool export attachments --path native-tests.xcresult --output-path fixture-screenshots
-          python3 -c 'import pathlib; files=list(pathlib.Path("fixture-screenshots").rglob("*.png")); total=sum(p.stat().st_size for p in files); print("PNG count:",len(files),"Total bytes:",total); assert len(files)>=4 and total<=10*1024*1024, "Preview screenshots missing or exceed 10 MiB bound"'
+          node scripts/native-preview-transfer.mjs check fixture-screenshots
+      - name: Transfer only disclosed fixture PNGs through ordinary logs
+        if: github.event_name == 'workflow_dispatch' && inputs.screenshot_logs && !inputs.upload_artifact
+        run: node scripts/native-preview-transfer.mjs emit fixture-screenshots
       - uses: actions/upload-artifact@v4
         if: inputs.upload_artifact
         with:

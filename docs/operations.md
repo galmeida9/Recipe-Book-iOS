@@ -288,7 +288,21 @@ and six native tests including the four-screen capture. The unsigned device
 app retained its share extension. The local export produced exactly four PNGs,
 787,255 bytes combined; the run uploaded zero artifacts. These ephemeral runner
 images were not transferred to the user. Capture must run again after verified
-storage-cap/headroom approval before screenshots can be retained and shown.
+transfer authorization before screenshots can be retained and shown.
+
+The subsequently authorized screenshot-only alternative uses ordinary workflow
+logs, which GitHub explicitly excludes from artifact storage billing:
+https://docs.github.com/en/billing/concepts/product-billing/github-actions .
+Manual `screenshot_logs=true` with `upload_artifact=false` emits only the four
+named attachments from the successful disclosed fixture capture test, never an
+IPA, arbitrary file, credential or live user data. The default remains off.
+`scripts/native-preview-transfer.mjs` enforces four ordinary PNG files, the
+expected manifest/test/name mapping, 512 KiB per image and 1 MiB combined.
+Base64 is split into 3,072-character log frames tagged with filename, byte count,
+sequence and SHA256. The decoder requires complete ordered frames, exact
+canonical base64/length/checksum and PNG headers/dimensions before writing to an
+empty output directory. Missing/truncated/masked payloads fail explicitly.
+This does not authorize artifact uploads or relax their cap/headroom gate.
 
 On the actual iPhone, test launch, hosted sign-in/PKCE callback, invite rejection,
 private/shared isolation, promotion/demotion/last-owner errors, image/data
