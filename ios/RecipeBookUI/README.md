@@ -14,7 +14,7 @@ Original SwiftUI design and screens for **Recipe Book**. This is a local Swift p
 ```
 
 1. Implement `RecipeBookService` (in `RecipeBookPresentation`) in the app target on top of RecipeBookCore. Every method must map to a real backend operation and throw on failure. Never return fabricated success.
-2. Show `RecipeBookRootView(service: adapter, incomingReel: $sharedReelURL)`. This view renders sign-in (a single "Continue with Google" action that calls `signIn()`; no Apple or Microsoft account options), awaiting invite (shows the account ID), profile setup and the tab app: Library, Cook, Imports, Shopping and Account.
+2. Show `RecipeBookRootView(service: adapter, incomingReel: $sharedReelURL)`. This view renders sign-in (a single "Continue with Google" action that calls `signIn()`, plus "Continue without signing in"; no Apple or Microsoft account options), awaiting invite (shows the account ID), profile setup and the tab app: Library, Cook, Imports, Shopping and Account. The tab app is used both signed in and as an on-device guest.
 3. For links from the share inbox, set `incomingReel` or present `ReelImportConfirmView(url:service:onFinished:)`. Nothing is submitted without the user tapping Import. Acknowledge the inbox entry in `onFinished`.
 
 If no service is injected, the app falls back to `UnconfiguredRecipeBookService`, whose every call fails visibly. `PreviewSupport.swift` is compiled only under `DEBUG` for Xcode previews. It is not a demo mode.
@@ -29,6 +29,15 @@ If no service is injected, the app falls back to `UnconfiguredRecipeBookService`
 - Import review never preselects a destination book.
 - Suggestions come only from saved recipes the user can access.
 - Shopping lists are personal. "Have" checkboxes exclude ingredients the user already has before adding them to a list.
+
+## Guest mode (continue without signing in)
+
+- **Entering guest mode:** sign-in, awaiting-access and profile-setup screens offer "Continue without signing in" or "Continue on this iPhone". These call `continueWithoutSignIn()`, which returns `SessionState.guest`. The UI never falls back to guest mode on an auth error.
+- **What guests can use:** the Library, recipes, editor, Cook suggestions and Shopping, all using the app's real on-device store. An "On this iPhone" banner says the data is saved only on this device.
+- **Sign-in prompts:** sharing (creating a shared book, or Share… on an on-device book), the Imports tab, incoming Reels and the Account tab all show a contextual Google sign-in prompt. A guest service throws `RecipeBookUIError.signInRequired(_:)` for any cloud-only call.
+- **After sign-in:** books whose `BookSummary.storage == .onDevice` stay on the device and appear on an "On This iPhone" shelf. Share… on such a book opens an explicit consent sheet. Only after the user confirms does it call `copyLocalBookToAccount(id:kind:)`, which uploads a copy and keeps the original. Nothing is migrated automatically.
+- **Signing out from guest mode:** `signOut()` returns to the sign-in screen, and the on-device data is kept.
+- **Compatibility:** `continueWithoutSignIn()` and `copyLocalBookToAccount(id:kind:)` are protocol requirements with default implementations that throw. Existing adapters keep compiling, but guest mode doesn't work until the app layer implements them.
 
 ## Design language
 

@@ -33,6 +33,42 @@ public enum SessionState: Equatable, Sendable {
     /// Invited, but first-run setup (display name) is incomplete.
     case needsSetup(UserProfile)
     case signedIn(UserProfile)
+    /// The user chose to continue without signing in. Personal books, recipes and shopping lists
+    /// are stored on this device by the app layer; sharing, imports and account features ask the
+    /// user to sign in first.
+    case guest
+}
+
+/// Cloud-only capabilities that need a signed-in account. Used for contextual sign-in prompts.
+public enum SignInFeature: String, Equatable, Hashable, Sendable, CaseIterable, Identifiable {
+    case sharing
+    case importing
+    case suggestions
+    case account
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .sharing: return "Sign in to share books"
+        case .importing: return "Sign in to import Reels"
+        case .suggestions: return "Sign in for suggestions"
+        case .account: return "Sign in to use your account"
+        }
+    }
+
+    public var message: String {
+        switch self {
+        case .sharing:
+            return "Shared books are stored in your Recipe Book account so other people can view and add recipes. Recipes on this iPhone stay here until you choose to copy them."
+        case .importing:
+            return "Reel imports are processed by the Recipe Book service, so they need an account. Your recipes on this iPhone stay here."
+        case .suggestions:
+            return "Suggestions from this service need an account. Your recipes on this iPhone stay here."
+        case .account:
+            return "Sign in to sync recipes to your account and share books. Recipes on this iPhone stay here."
+        }
+    }
 }
 
 // MARK: - Books & membership
@@ -47,6 +83,14 @@ public enum MemberRole: String, Equatable, Hashable, Sendable, CaseIterable {
     case member
 }
 
+/// Where a book's data lives. Books on the device are never uploaded without explicit consent.
+public enum BookStorage: String, Equatable, Hashable, Sendable, CaseIterable {
+    /// Stored only on this device (guest data). Always a personal book.
+    case onDevice
+    /// Stored in the user's Recipe Book account.
+    case account
+}
+
 public struct BookSummary: Equatable, Hashable, Sendable, Identifiable {
     public var id: BookID
     public var name: String
@@ -54,14 +98,17 @@ public struct BookSummary: Equatable, Hashable, Sendable, Identifiable {
     public var myRole: MemberRole
     public var recipeCount: Int
     public var memberCount: Int
+    public var storage: BookStorage
 
-    public init(id: BookID, name: String, kind: BookKind, myRole: MemberRole, recipeCount: Int, memberCount: Int) {
+    public init(id: BookID, name: String, kind: BookKind, myRole: MemberRole, recipeCount: Int, memberCount: Int,
+                storage: BookStorage = .account) {
         self.id = id
         self.name = name
         self.kind = kind
         self.myRole = myRole
         self.recipeCount = recipeCount
         self.memberCount = memberCount
+        self.storage = storage
     }
 }
 

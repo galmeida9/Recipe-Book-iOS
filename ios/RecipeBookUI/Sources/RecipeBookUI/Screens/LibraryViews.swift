@@ -6,27 +6,41 @@ import RecipeBookPresentation
 struct LibraryView: View {
     @Environment(\.recipeBookService) private var service
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessMode) private var accessMode
+    @Environment(\.requestSignIn) private var requestSignIn
     @State private var state: LoadState<[BookSummary]> = .loading
     @State private var reload = 0
     @State private var showingCreate = false
+    @State private var pendingSignIn = false
 
     var body: some View {
         NavigationStack {
             LoadingContent(state: state, retry: { reload += 1 }) { books in
                 if books.isEmpty {
-                    ContentUnavailableView {
-                        Label("No recipe books yet", systemImage: "books.vertical")
-                    } description: {
-                        Text("Start a personal book for your own recipes, or a shared book to collect recipes with others.")
-                    } actions: {
-                        Button("New Book") { showingCreate = true }
-                            .buttonStyle(.borderedProminent)
+                    VStack(spacing: 0) {
+                        if accessMode == .guest { OnDeviceBanner().padding() }
+                        ContentUnavailableView {
+                            Label("No recipe books yet", systemImage: "books.vertical")
+                        } description: {
+                            Text(accessMode == .guest
+                                 ? "Start a personal book for your own recipes. It’s saved on this iPhone."
+                                 : "Start a personal book for your own recipes, or a shared book to collect recipes with others.")
+                        } actions: {
+                            Button("New Book") { showingCreate = true }
+                                .buttonStyle(.borderedProminent)
+                        }
                     }
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
-                            shelf("Shared", books.filter { $0.kind == .shared })
-                            shelf("Personal", books.filter { $0.kind == .personal })
+                            if accessMode == .guest { OnDeviceBanner() }
+                            let account = books.filter { $0.storage == .account }
+                            let onDevice = books.filter { $0.storage == .onDevice }
+                            shelf("Shared", account.filter { $0.kind == .shared })
+                            shelf("Personal", account.filter { $0.kind == .personal })
+                            shelf(accessMode == .guest ? "Personal" : "On This iPhone", onDevice,
+                                  footer: accessMode == .guest ? nil
+                                  : "Saved only on this device before you signed in. Open a book to copy it to your account.")
                         }
                         .padding()
                     }
@@ -39,20 +53,30 @@ struct LibraryView: View {
                 Button { showingCreate = true } label: { Label("New Book", systemImage: "plus") }
             }
             .recipeDestinations()
-            .sheet(isPresented: $showingCreate) {
-                CreateBookSheet { _ in reload += 1 }
+            .sheet(isPresented: $showingCreate, onDismiss: {
+                if pendingSignIn {
+                    pendingSignIn = false
+                    requestSignIn(.sharing)
+                }
+            }) {
+                CreateBookSheet(onCreated: { _ in reload += 1 }, onSignInNeeded: { pendingSignIn = true })
             }
         }
         .task(id: reload) { await load() }
     }
 
     @ViewBuilder
-    private func shelf(_ title: String, _ books: [BookSummary]) -> some View {
+    private func shelf(_ title: String, _ books: [BookSummary], footer: String? = nil) -> some View {
         if !books.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 Text(title)
                     .font(.title3.weight(.semibold))
                     .accessibilityAddTraits(.isHeader)
+                if let footer {
+                    Text(footer)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 let columns = typeSize.isAccessibilitySize
                     ? [GridItem(.flexible())]
                     : [GridItem(.adaptive(minimum: 160), spacing: 14)]
@@ -96,6 +120,9 @@ struct BookCover: View {
                     .lineLimit(3)
                 Spacer(minLength: 0)
                 VStack(alignment: .leading, spacing: 2) {
+                    if book.storage == .onDevice {
+                        Label("On this iPhone", systemImage: "iphone")
+                    }
                     Text(book.recipeCount == 1 ? "1 recipe" : "\(book.recipeCount) recipes")
                     if book.kind == .shared {
                         Text(book.memberCount == 1 ? "1 member" : "\(book.memberCount) members")
@@ -113,7 +140,7 @@ struct BookCover: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(book.name), \(book.kind == .shared ? "shared book" : "personal book"), \(book.recipeCount) recipes")
+        .accessibilityLabel("\(book.name), \(book.kind == .shared ? "shared book" : "personal book")\(book.storage == .onDevice ? ", on this iPhone" : ""), \(book.recipeCount) recipes")
         .accessibilityHint(book.myRole == .owner && book.kind == .shared ? "You are an owner" : "")
     }
 }
@@ -121,13 +148,30 @@ struct BookCover: View {
 @MainActor
 struct CreateBookSheet: View {
     let onCreated: (BookSummary) -> Void
+    /// Called when a guest asks to create a shared book; the presenter shows sign-in after dismissal.
+    var onSignInNeeded: () -> Void = {}
     @Environment(\.recipeBookService) private var service
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessMode) private var accessMode
     @State private var name = ""
     @State private var kind: BookKind = .personal
     @State private var runner = ActionRunner()
 
     private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var needsSignIn: Bool { accessMode == .guest && kind == .shared }
+
+    private var footer: String {
+        switch (kind, accessMode) {
+        case (.personal, .guest):
+            return "Saved only on this iPhone. Only you can see it."
+        case (.personal, .account):
+            return "Only you can see a personal book."
+        case (.shared, .guest):
+            return "Shared books are stored in a Recipe Book account so others can join. Sign in with Google to create one."
+        case (.shared, .account):
+            return "You’ll be the owner. Add people by account ID; everyone can view and add recipes, and members edit only their own."
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -142,9 +186,7 @@ struct CreateBookSheet: View {
                     }
                     .pickerStyle(.segmented)
                 } footer: {
-                    Text(kind == .personal
-                         ? "Only you can see a personal book."
-                         : "You’ll be the owner. Add people by account ID; everyone can view and add recipes, and members edit only their own.")
+                    Text(footer)
                 }
             }
             .navigationTitle("New Book")
@@ -156,6 +198,11 @@ struct CreateBookSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     if runner.isRunning {
                         ProgressView()
+                    } else if needsSignIn {
+                        Button("Sign In") {
+                            onSignInNeeded()
+                            dismiss()
+                        }
                     } else {
                         Button("Create") {
                             let name = trimmed, kind = kind
@@ -189,7 +236,12 @@ struct BookView: View {
     @State private var showingLeave = false
     @State private var confirmDeleteBook = false
     @State private var recipePendingDelete: RecipeSummary?
+    @State private var showingCopy = false
+    @State private var copiedBook: BookSummary?
+    @State private var pendingCopiedBook: BookSummary?
     @State private var runner = ActionRunner()
+    @Environment(\.accessMode) private var accessMode
+    @Environment(\.requestSignIn) private var requestSignIn
 
     var body: some View {
         LoadingContent(state: state, retry: { reload += 1 }) { book in
@@ -202,6 +254,15 @@ struct BookView: View {
 
     private func bookMenuActions(_ book: BookDetail, permissions: BookPermissions) -> [ToolbarAction] {
         var actions: [ToolbarAction] = []
+        if book.summary.storage == .onDevice {
+            actions.append(ToolbarAction("Share…", systemImage: "person.2.badge.plus") {
+                if accessMode == .guest {
+                    requestSignIn(.sharing)
+                } else {
+                    showingCopy = true
+                }
+            })
+        }
         if book.summary.kind == .shared {
             actions.append(ToolbarAction("Leave Book…", systemImage: "rectangle.portrait.and.arrow.right") { showingLeave = true })
         }
@@ -218,8 +279,12 @@ struct BookView: View {
         List {
             Section {
                 HStack(spacing: 12) {
-                    Label(book.summary.kind == .shared ? "Shared book" : "Personal book",
-                          systemImage: book.summary.kind == .shared ? "person.2" : "lock")
+                    if book.summary.storage == .onDevice {
+                        Label("Personal book on this iPhone", systemImage: "iphone")
+                    } else {
+                        Label(book.summary.kind == .shared ? "Shared book" : "Personal book",
+                              systemImage: book.summary.kind == .shared ? "person.2" : "lock")
+                    }
                     Spacer()
                     if book.summary.kind == .shared { RoleBadge(role: book.summary.myRole) }
                 }
@@ -240,7 +305,9 @@ struct BookView: View {
                     ContentUnavailableView {
                         Label("No recipes yet", systemImage: "fork.knife")
                     } description: {
-                        Text("Add one by hand, or share a public Instagram Reel to Recipe Book.")
+                        Text(accessMode == .guest
+                             ? "Add one by hand. Sign in to import recipes from Instagram Reels."
+                             : "Add one by hand, or share a public Instagram Reel to Recipe Book.")
                     } actions: {
                         Button("Add Recipe") { showingEditor = true }
                     }
@@ -280,6 +347,20 @@ struct BookView: View {
         }
         .sheet(isPresented: $showingLeave) {
             LeaveBookSheet(book: book) { dismiss() }
+        }
+        .sheet(isPresented: $showingCopy, onDismiss: {
+            copiedBook = pendingCopiedBook
+            pendingCopiedBook = nil
+        }) {
+            CopyToAccountSheet(book: book.summary) { pendingCopiedBook = $0 }
+        }
+        .alert("Copied to your account",
+               isPresented: Binding(get: { copiedBook != nil }, set: { if !$0 { copiedBook = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(copiedBook?.kind == .shared
+                 ? "“\(copiedBook?.name ?? "")” is now a shared book in your Library. Open it to add people. The original stays on this iPhone."
+                 : "“\(copiedBook?.name ?? "")” is now in your Library. The original stays on this iPhone.")
         }
         .confirmationDialog("Delete “\(book.summary.name)”?", isPresented: $confirmDeleteBook, titleVisibility: .visible) {
             Button("Delete Book and All Recipes", role: .destructive) {

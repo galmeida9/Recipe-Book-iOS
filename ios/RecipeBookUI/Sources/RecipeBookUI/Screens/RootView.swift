@@ -2,7 +2,7 @@
 import SwiftUI
 import RecipeBookPresentation
 
-/// App entry view. Owns access state (signed out / awaiting invite / setup / signed in) and the
+/// App entry view. Owns access state (signed out / awaiting invite / setup / signed in / guest) and the
 /// main tabs. `incomingReel` is set by the app layer when a Reel link is shared into the app; the
 /// view clears it once the user has submitted or dismissed the import.
 @MainActor
@@ -29,6 +29,8 @@ public struct RecipeBookRootView: View {
                     ProfileSetupView(profile: profile, onChange: apply)
                 case .signedIn(let profile):
                     MainTabView(profile: profile, incomingReel: $incomingReel, onChange: apply)
+                case .guest:
+                    MainTabView(profile: nil, incomingReel: $incomingReel, onChange: apply)
                 }
             }
         }
@@ -80,14 +82,22 @@ struct SignInView: View {
                 Text("Sign in with your Google account. Recipe Book is invite-only: after signing in, the app administrator needs to grant your account access. Joining a shared book is a separate step done by its owners.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                Text("Or continue without signing in to keep personal recipes and shopping lists on this iPhone. You’ll be asked to sign in before sharing books or importing Reels.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             .padding(24)
             .frame(maxWidth: 560, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
         .bottomControlBar {
-            GoogleSignInButton(isRunning: runner.isRunning) {
-                runner.run { onChange(try await service.signIn()) }
+            VStack(spacing: 12) {
+                GoogleSignInButton(isRunning: runner.isRunning) {
+                    runner.run { onChange(try await service.signIn()) }
+                }
+                ContinueOnDeviceButton(title: "Continue Without Signing In", runner: runner, onChange: onChange)
+                    .font(.body.weight(.medium))
+                    .frame(minHeight: 44)
             }
         }
         .errorAlert($runner.errorMessage)
@@ -157,6 +167,11 @@ struct AwaitingAccessView: View {
                     }
                     .disabled(runner.isRunning)
                 }
+                Section {
+                    ContinueOnDeviceButton(title: "Continue on This iPhone", runner: runner, onChange: onChange)
+                } footer: {
+                    Text("Use personal books, recipes and shopping lists on this device while you wait. Nothing is uploaded.")
+                }
             }
             .navigationTitle("Recipe Book")
         }
@@ -192,6 +207,11 @@ struct ProfileSetupView: View {
                 } footer: {
                     Text("Shown to members of books you share. You can change it later.")
                 }
+                Section {
+                    ContinueOnDeviceButton(title: "Continue on This iPhone Instead", runner: runner, onChange: onChange)
+                } footer: {
+                    Text("Use personal books, recipes and shopping lists on this device without finishing setup.")
+                }
             }
             .navigationTitle("Welcome")
             .toolbar {
@@ -218,22 +238,55 @@ struct ProfileSetupView: View {
 struct MainTabView: View {
     enum AppTab: Hashable { case library, suggestions, imports, shopping, account }
 
-    let profile: UserProfile
+    /// `nil` when the user continued without signing in (on-device guest).
+    let profile: UserProfile?
     @Binding var incomingReel: URL?
     let onChange: (SessionState) -> Void
     @State private var tab: AppTab = .library
+    @State private var signInFeature: SignInFeature?
 
     var body: some View {
         tabs
             .minimizingTabBarOnScroll()
+            .environment(\.accessMode, profile == nil ? .guest : .account)
+            .environment(\.requestSignIn, SignInRequest { signInFeature = $0 })
+            .sheet(item: $signInFeature) { feature in
+                SignInPromptSheet(feature: feature, onChange: onChange)
+            }
             .sheet(isPresented: Binding(get: { incomingReel != nil }, set: { if !$0 { incomingReel = nil } })) {
                 if let url = incomingReel {
-                    ReelImportConfirmView(url: url) { job in
-                        incomingReel = nil
-                        if job != nil { tab = .imports }
+                    if profile == nil {
+                        // Keep the shared link: after sign-in the account tabs offer it for import.
+                        GuestReelSheet(onChange: onChange) { incomingReel = nil }
+                    } else {
+                        ReelImportConfirmView(url: url) { job in
+                            incomingReel = nil
+                            if job != nil { tab = .imports }
+                        }
                     }
                 }
             }
+    }
+
+    @ViewBuilder
+    private var importsTab: some View {
+        if profile == nil {
+            NavigationStack {
+                SignInPromptView(feature: .importing, onChange: onChange)
+                    .navigationTitle("Imports")
+            }
+        } else {
+            ImportsView()
+        }
+    }
+
+    @ViewBuilder
+    private var accountTab: some View {
+        if let profile {
+            AccountView(profile: profile, onChange: onChange)
+        } else {
+            GuestAccountView(onChange: onChange)
+        }
     }
 
     @ViewBuilder
@@ -242,11 +295,9 @@ struct MainTabView: View {
             TabView(selection: $tab) {
                 Tab("Library", systemImage: "books.vertical", value: AppTab.library) { LibraryView() }
                 Tab("Cook", systemImage: "frying.pan", value: AppTab.suggestions) { SuggestionsView() }
-                Tab("Imports", systemImage: "square.and.arrow.down", value: AppTab.imports) { ImportsView() }
+                Tab("Imports", systemImage: "square.and.arrow.down", value: AppTab.imports) { importsTab }
                 Tab("Shopping", systemImage: "cart", value: AppTab.shopping) { ShoppingListsView() }
-                Tab("Account", systemImage: "person.crop.circle", value: AppTab.account) {
-                    AccountView(profile: profile, onChange: onChange)
-                }
+                Tab("Account", systemImage: "person.crop.circle", value: AppTab.account) { accountTab }
             }
         } else {
             TabView(selection: $tab) {
@@ -256,17 +307,63 @@ struct MainTabView: View {
                 SuggestionsView()
                     .tabItem { Label("Cook", systemImage: "frying.pan") }
                     .tag(AppTab.suggestions)
-                ImportsView()
+                importsTab
                     .tabItem { Label("Imports", systemImage: "square.and.arrow.down") }
                     .tag(AppTab.imports)
                 ShoppingListsView()
                     .tabItem { Label("Shopping", systemImage: "cart") }
                     .tag(AppTab.shopping)
-                AccountView(profile: profile, onChange: onChange)
+                accountTab
                     .tabItem { Label("Account", systemImage: "person.crop.circle") }
                     .tag(AppTab.account)
             }
         }
+    }
+}
+
+// MARK: - Guest surfaces
+
+/// Shown when a Reel is shared into the app while the user isn't signed in. Signing in keeps the
+/// link so the account tabs can offer it for import; "Not Now" dismisses it.
+@MainActor
+private struct GuestReelSheet: View {
+    let onChange: (SessionState) -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            SignInPromptView(feature: .importing, onChange: onChange)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Not Now", action: onDismiss)
+                    }
+                }
+        }
+    }
+}
+
+/// Account tab for guests: states where data lives and offers Google sign-in.
+@MainActor
+private struct GuestAccountView: View {
+    let onChange: (SessionState) -> Void
+    @Environment(\.recipeBookService) private var service
+    @State private var runner = ActionRunner()
+
+    var body: some View {
+        NavigationStack {
+            SignInPromptView(feature: .account, onChange: onChange)
+                .navigationTitle("Account")
+                .toolbar {
+                    ToolbarItem(placement: .secondaryAction) {
+                        Button("Back to Sign-In Screen") {
+                            runner.run { try await service.signOut(); onChange(.signedOut) }
+                        }
+                        .disabled(runner.isRunning)
+                    }
+                }
+        }
+        .errorAlert($runner.errorMessage)
     }
 }
 #endif

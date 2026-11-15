@@ -13,6 +13,9 @@ public protocol RecipeBookService: Sendable {
     func signIn() async throws -> SessionState
     func completeSetup(displayName: String) async throws -> SessionState
     func signOut() async throws
+    /// Guest mode: records the choice to use the app on this device without an account.
+    /// Default implementation throws (see extension below).
+    func continueWithoutSignIn() async throws -> SessionState
 
     // MARK: Books & membership
     func books() async throws -> [BookSummary]
@@ -27,6 +30,8 @@ public protocol RecipeBookService: Sendable {
     func removeMember(_ userID: UserID, from bookID: BookID) async throws -> BookDetail
     /// `resolution` is required when the caller is the last owner of a shared book.
     func leaveBook(id: BookID, resolution: LastOwnerResolution?) async throws
+    /// Explicit-consent copy of an on-device book into the signed-in account (default throws).
+    func copyLocalBookToAccount(id: BookID, kind: BookKind) async throws -> BookSummary
 
     // MARK: Recipes
     func recipe(id: RecipeID) async throws -> RecipeDetail
@@ -66,13 +71,28 @@ public protocol RecipeBookService: Sendable {
     func deleteAccount(resolutions: [BookID: LastOwnerResolution]) async throws
 }
 
+/// Guest (on-device) mode. Default implementations throw so existing adapters keep compiling;
+/// the app layer replaces them with its real local store.
+public extension RecipeBookService {
+    /// Records the choice to use the app without an account and returns `.guest`.
+    func continueWithoutSignIn() async throws -> SessionState { throw RecipeBookUIError.serviceNotConfigured }
+    /// Called only after the user explicitly agrees. Uploads a copy of an on-device book and its
+    /// recipes into a new book of `kind` in the signed-in account (`.shared` when the user is sharing it).
+    /// The on-device book is kept and never auto-migrated.
+    func copyLocalBookToAccount(id: BookID, kind: BookKind) async throws -> BookSummary { throw RecipeBookUIError.serviceNotConfigured }
+}
+
 public enum RecipeBookUIError: LocalizedError, Equatable, Sendable {
     case serviceNotConfigured
+    /// Thrown by a guest-mode service for cloud-only operations; the UI offers Google sign-in.
+    case signInRequired(SignInFeature)
 
     public var errorDescription: String? {
         switch self {
         case .serviceNotConfigured:
             return "Recipe Book isn’t connected to its service yet."
+        case .signInRequired(let feature):
+            return "\(feature.title). \(feature.message)"
         }
     }
 }

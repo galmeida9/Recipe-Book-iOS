@@ -22,6 +22,41 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertNil(RecipeDraft(editing: saved).evidenceText)
     }
 
+    // MARK: Guest mode
+
+    func testBookStorageDefaultsToAccountForExistingCallers() {
+        let book = BookSummary(id: "b", name: "Soups", kind: .personal, myRole: .owner, recipeCount: 0, memberCount: 1)
+        XCTAssertEqual(book.storage, .account)
+        let local = BookSummary(id: "l", name: "Soups", kind: .personal, myRole: .owner, recipeCount: 0, memberCount: 1,
+                                storage: .onDevice)
+        XCTAssertEqual(local.storage, .onDevice)
+    }
+
+    func testSignInRequiredErrorExplainsFeatureAndKeepsLocalData() {
+        for feature in SignInFeature.allCases {
+            let description = RecipeBookUIError.signInRequired(feature).errorDescription ?? ""
+            XCTAssertTrue(description.hasPrefix(feature.title))
+            XCTAssertTrue(feature.message.contains("stay here"), "\(feature) must say local data stays")
+        }
+        XCTAssertNotEqual(RecipeBookUIError.signInRequired(.sharing), .signInRequired(.importing))
+    }
+
+    func testGuestDefaultsNeverSucceed() async {
+        let service = UnconfiguredRecipeBookService()
+        do {
+            _ = try await service.continueWithoutSignIn()
+            XCTFail("Unconfigured service must not enter guest mode")
+        } catch {
+            XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
+        }
+        do {
+            _ = try await service.copyLocalBookToAccount(id: "b", kind: .shared)
+            XCTFail("Unconfigured service must not copy")
+        } catch {
+            XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
+        }
+    }
+
     // MARK: Permissions
 
     func testMemberCanEditOnlyOwnRecipes() {

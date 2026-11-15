@@ -100,6 +100,16 @@ actor PreviewRecipeBookService: RecipeBookService {
         session = .signedIn(UserProfile(id: me.id, displayName: displayName)); return session
     }
     func signOut() async throws { session = .signedOut }
+    func continueWithoutSignIn() async throws -> SessionState {
+        try requireLive("On-device guest storage")
+        session = .guest
+        return session
+    }
+    func copyLocalBookToAccount(id: BookID, kind: BookKind) async throws -> BookSummary {
+        try requireLive("Copying to your account")
+        guard let book = bookList.first(where: { $0.id == id }) else { throw NotFound() }
+        return try await createBook(name: book.summary.name, kind: kind)
+    }
 
     func books() async throws -> [BookSummary] { bookList.map(\.summary) }
     func createBook(name: String, kind: BookKind) async throws -> BookSummary {
