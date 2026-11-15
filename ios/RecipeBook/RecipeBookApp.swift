@@ -10,30 +10,49 @@ struct RecipeBookApp: App {
     @State private var incomingReel: URL?
     @State private var inboxError: String?
 
-    init() { service = Result { try AppConfiguration.service() } }
+    init() {
+        #if DEBUG && targetEnvironment(simulator)
+        if FixtureShowcaseScreen.fromLaunchArguments() != nil {
+            service = .failure(APIError(status: 0, code: "fixture_preview", message: "Fixture previews do not initialize a live service."))
+            return
+        }
+        #endif
+        service = Result { try AppConfiguration.service() }
+    }
     var body: some Scene {
         WindowGroup {
-            Group {
-                switch service {
-                case .success(let service):
-                    RecipeBookRootView(service: service, incomingReel: $incomingReel)
-                case .failure(let error):
-                    ContentUnavailableView("Service setup required", systemImage: "exclamationmark.triangle",
-                                           description: Text(error.localizedDescription))
-                }
+            #if DEBUG && targetEnvironment(simulator)
+            if let screen = FixtureShowcaseScreen.fromLaunchArguments() {
+                FixtureShowcaseView(screen: screen)
+            } else {
+                applicationContent
             }
-            .onOpenURL { url in
-                if let reel = ReelURL.canonicalize(url) { incomingReel = reel }
-                else if url.scheme == "recipebook", url.host == "import" { loadInbox() }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active { loadInbox() }
-            }
-            .task { loadInbox() }
-            .alert("Unable to read shared Reel", isPresented: Binding(get: { inboxError != nil }, set: { if !$0 { inboxError = nil } })) {
-                Button("OK") { inboxError = nil }
-            } message: { Text(inboxError ?? "") }
+            #else
+            applicationContent
+            #endif
         }
+    }
+    private var applicationContent: some View {
+        Group {
+            switch service {
+            case .success(let service):
+                RecipeBookRootView(service: service, incomingReel: $incomingReel)
+            case .failure(let error):
+                ContentUnavailableView("Service setup required", systemImage: "exclamationmark.triangle",
+                                       description: Text(error.localizedDescription))
+            }
+        }
+        .onOpenURL { url in
+            if let reel = ReelURL.canonicalize(url) { incomingReel = reel }
+            else if url.scheme == "recipebook", url.host == "import" { loadInbox() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { loadInbox() }
+        }
+        .task { loadInbox() }
+        .alert("Unable to read shared Reel", isPresented: Binding(get: { inboxError != nil }, set: { if !$0 { inboxError = nil } })) {
+            Button("OK") { inboxError = nil }
+        } message: { Text(inboxError ?? "") }
     }
     private func loadInbox() {
         guard incomingReel == nil else { return }

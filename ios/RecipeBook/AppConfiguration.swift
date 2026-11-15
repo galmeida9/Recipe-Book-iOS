@@ -4,7 +4,7 @@ import RecipeBookAuth
 import RecipeBookPresentation
 
 enum AppConfiguration {
-    static func appGroup() throws -> String { try setting("RecipeBookAppGroup") }
+    static func appGroup() throws -> String { try SharedAppGroup.current() }
     static func service() throws -> any RecipeBookPresentation.RecipeBookService {
         let auth = try HostedAuth(configuration: AuthConfiguration(
             authorizationURL: url("RecipeBookAuthorizeURL"),

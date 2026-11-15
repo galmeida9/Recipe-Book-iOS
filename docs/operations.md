@@ -254,6 +254,35 @@ and no stripped extension after any re-sign operation.
 `scripts\Verify-Ipa.ps1` verifies only archive layout and both embedded profiles,
 not cryptographic validity or capabilities.
 
+The [current SideStore prerequisites](https://docs.sidestore.io/docs/installation/prerequisites)
+support Windows for initial installation and require Wi-Fi plus LocalDevVPN.
+The [free-account limits](https://docs.sidestore.io/docs/faq) are three active
+apps including SideStore, ten App IDs per week and seven-day renewal. Keep the
+share extension; do not use extension-removal or limit-bypass options. Group IDs
+can change during re-signing, so confirm the group's runtime configuration still
+matches both signed targets before testing share delivery. An unchanged original
+Info.plist value alone does not prove a usable re-signed app group.
+Both native targets now use `SharedAppGroup.current()`: it reads the loaded
+target's bounded thin-64 Mach-O XML entitlement metadata, matches only the
+original group or its signed ten-character team suffix, rejects ambiguity, and
+requires iOS to authorize the actual container. This uses Foundation/public file
+formats, not private entitlement APIs or a third-party signer dependency.
+Unsupported/missing signature metadata fails explicitly; it is not proof of
+cryptographic profile validity or a substitute for real re-signing tests.
+
+Trial delivery remains gated on usable auth/API configuration and an approved
+bounded package. Artifact upload is opt-in with one-day retention; verify the
+GitHub account's shared artifact-storage headroom and spending controls plus the
+actual archive size before enabling it. A free public macOS runner does not
+prove that artifact storage has an enforceable zero-overage cap.
+An explicit `-RecipeBookFixtureShowcase <screen>` launch flag selects the Opus
+fixture harness only in DEBUG Simulator builds. Release/device builds exclude
+the entry point. Every screen discloses that no live backend/Google sign-in is
+connected; external actions fail rather than pretend to succeed. Native XCTest
+captures sign-in, library, recipe detail and shopping locally in its result
+bundle, with PNG exports bounded to 10 MiB. Exports are not uploaded while the
+account storage cap/headroom gate remains unverified.
+
 On the actual iPhone, test launch, hosted sign-in/PKCE callback, invite rejection,
 private/shared isolation, promotion/demotion/last-owner errors, image/data
 revocation, concurrent writes, paste and Instagram native share, offline/errors,

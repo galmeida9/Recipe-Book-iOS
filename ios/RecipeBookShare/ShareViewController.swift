@@ -17,10 +17,10 @@ final class ShareViewController: UIViewController {
                         reel = try await loadURL(provider, type: UTType.plainText.identifier)
                     }
                 }
-                guard let reel,
-                      let group = Bundle.main.object(forInfoDictionaryKey: "RecipeBookAppGroup") as? String else {
+                guard let reel else {
                     throw APIError(status: 0, code: "invalid_share", message: "Share an Instagram Reel link.")
                 }
+                let group = try SharedAppGroup.current()
                 try SharedReelInbox(appGroup: group).enqueue(reel)
                 let alert = UIAlertController(title: "Link saved", message: "Open Recipe Book to import and review this Reel.", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "Done", style: .default) { _ in

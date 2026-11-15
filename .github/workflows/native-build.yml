@@ -62,7 +62,11 @@ jobs:
           ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d,reverse=True) if "iOS" in k for x in d[k] if x.get("isAvailable") and x["name"].startswith("iPhone")))')
           echo "id=$ID" >> "$GITHUB_OUTPUT"
       - name: Run native Simulator launch smoke test
-        run: xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build CODE_SIGNING_ALLOWED=NO test
+        run: xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build -resultBundlePath native-tests.xcresult CODE_SIGNING_ALLOWED=NO test
+      - name: Export requested native fixture screenshots locally on the runner
+        run: |
+          xcrun xcresulttool export attachments --path native-tests.xcresult --output-path fixture-screenshots
+          python3 -c 'import pathlib; files=list(pathlib.Path("fixture-screenshots").rglob("*.png")); total=sum(p.stat().st_size for p in files); print("PNG count:",len(files),"Total bytes:",total); assert len(files)>=4 and total<=10*1024*1024, "Preview screenshots missing or exceed 10 MiB bound"'
       - uses: actions/upload-artifact@v4
         if: inputs.upload_artifact
         with:
