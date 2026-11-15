@@ -21,8 +21,27 @@ jobs:
   compile:
     if: github.event_name == 'push' || inputs.licensed_host_approved
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Select newest installed Xcode without downloading SDKs
+        run: |
+          python3 <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob("/Applications/Xcode*.app"):
+              developer = app + "/Contents/Developer"
+              output = subprocess.check_output([developer + "/usr/bin/xcodebuild", "-version"], text=True)
+              version = re.search(r"Xcode ([0-9.]+)", output).group(1)
+              print(app, output.strip())
+              candidates.append((tuple(map(int, version.split("."))), developer))
+          if not candidates:
+              raise RuntimeError("No installed Apple Xcode host toolchain is available")
+          selected = max(candidates)[1]
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("DEVELOPER_DIR=" + selected + "\n")
+          print("Selected", selected)
+          PY
       - name: Discover installed Apple tooling and runtimes
         run: |
           xcodebuild -version

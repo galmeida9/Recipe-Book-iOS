@@ -3,7 +3,7 @@ import { z, ZodError } from "zod";
 import { authenticate } from "./auth.js";
 import { AppError, expectedVersion, idSchema, invariant } from "./contracts.js";
 import { RecipeBookService } from "./service.js";
-import { ImportService, importStillActive, failImportDelivery, processImport } from "./imports.js";
+import { ImportService, importDelivery, failImportDelivery, processImport } from "./imports.js";
 import { enqueueImport } from "./queue.js";
 import { readRecipeImage } from "./images.js";
 
@@ -82,7 +82,10 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
         const key = idSchema.parse(request.headers.get("idempotency-key"));
         const job = await imports.create(await body(request), key);
         if (["queued", "running"].includes(job.state)) {
-          try { await enqueueImport(job.id); }
+          try {
+            const delivery = await importDelivery(job.id);
+            if (delivery) await enqueueImport(delivery);
+          }
           catch {
             throw new AppError(503, "import_delivery", "The import was reserved but queue delivery failed. Retry the same submission to recover it without another charge.");
           }
@@ -95,7 +98,8 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
     } else if (path.length === 3 && method === "POST") {
       if (path[2] === "retry") {
         const job = await imports.retry(id(1), version());
-        await enqueueImport(job.id);
+        const delivery = await importDelivery(job.id);
+        if (delivery) await enqueueImport(delivery);
         result = job;
       }
       else if (path[2] === "approve") {
@@ -133,15 +137,16 @@ app.http("recipeBookApi", {
 app.storageQueue("importWorker", {
   queueName: "imports", connection: "ImportQueue",
   handler: async (message: unknown) => {
-    const input = z.object({ id: idSchema }).strict().parse(typeof message === "string" ? JSON.parse(message) : message);
-    await processImport(input.id);
-    if (await importStillActive(input.id)) await enqueueImport(input.id, 30);
+    const input = z.object({ id: idSchema, deadline: z.string().datetime() }).strict().parse(typeof message === "string" ? JSON.parse(message) : message);
+    await processImport(input.id, undefined, input.deadline);
+    const delivery = await importDelivery(input.id, input.deadline);
+    if (delivery) await enqueueImport(delivery, 30);
   }
 });
 app.storageQueue("importPoison", {
   queueName: "imports-poison", connection: "ImportQueue",
   handler: async (message: unknown) => {
-    const input = z.object({ id: idSchema }).strict().parse(typeof message === "string" ? JSON.parse(message) : message);
-    await failImportDelivery(input.id);
+    const input = z.object({ id: idSchema, deadline: z.string().datetime() }).strict().parse(typeof message === "string" ? JSON.parse(message) : message);
+    await failImportDelivery(input.id, undefined, input.deadline);
   }
 });

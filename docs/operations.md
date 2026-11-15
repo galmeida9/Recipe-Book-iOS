@@ -25,6 +25,15 @@ branch on standard Apple-hardware macOS runners, with manual dispatch available.
 Artifact upload is off by default. It can compile on the licensed host, but its unsigned
 artifact is not an IPA, installation proof, or signing success. Do not dispatch
 unapproved branches or paid/larger runners. Ordinary backend CI runs on Windows.
+The workflow reports the actual installed SDKs/runtimes and includes a native
+Simulator launch test of the explicit unconfigured-service state. This is
+automated CI, not an interactive Windows preview or evidence of device signing.
+The first corrected host run passed 3 Core Swift Testing checks, 15 presentation
+XCTest checks, and the unsigned app/extension build using Xcode 26.6/iOS SDK
+26.5. Its Simulator test initially failed because the extension built both
+architectures while its package dependency built only the active architecture;
+Debug now uses the standard active-architecture setting consistently. Native
+validation must finish before claiming Simulator or iOS 27 API-path success.
 
 ## Local backend
 
@@ -46,6 +55,11 @@ The schema is a versioned initial migration, not an idempotent startup script.
 The test creates a unique test issuer, cleans up only its own seeded rows, and
 checks isolation, stale writes, two-owner demotion races and account revocation.
 Without SQL access these tests are reported skipped, not passed.
+Real validation on the owned Sweden Central free database passed all 15 tests
+with no skips. The deployed flags were read back before activity: free allowance
+enabled, exhaustion AutoPause, minimum 0.5 vCore, 60-minute idle pause and 32 GiB.
+The subscription spending limit was On, and temporary single-IP SQL access was
+removed after the run. No Functions API or customer identity was exposed.
 
 `scripts\Test-Foundation.ps1` also runs portable Swift tests when Swift is already
 installed. Portable tests do not prove SwiftUI, extension capabilities or iPhone
@@ -102,6 +116,10 @@ Deployment prerequisites:
   Operator-controlled identity provisioning, combined tenant MAU billing and
   enforceable no-overage protection are separate prerequisites. A workforce AAD
   tenant or backend allowlist is not this proof. No SMS/M2M/premium features.
+  The [Graph flow-update permission](https://learn.microsoft.com/en-us/graph/api/authenticationeventsflow-update?view=graph-rest-1.0)
+  is `EventListener.ReadWrite.All`; delegated operation requires the External ID
+  User Flow Administrator role or an appropriate higher role. Do not assume the
+  Azure CLI's existing workforce sign-in has these consumer-tenant permissions.
 - Exact hosted authorize/token URLs, issuer, JWKS URL, audience and delegated API
   scope from the tenant configuration; register `recipebook://oauth` as the
   native public-client callback and allow PKCE/offline access. No mobile secret.
@@ -183,6 +201,8 @@ database pause. SQL persistence precedes delivery; if initial delivery fails,
 the API returns an explicit recoverable error and retrying the same idempotency
 key repairs delivery without another reservation/charged POST. Duplicate queue
 deliveries poll an existing run. Poison messages visibly fail the persisted job.
+Deliveries carry the attempt's immutable deadline: stale deliveries, poison
+messages and completion callbacks cannot affect a later pre-dispatch retry.
 Unsafe failed jobs cannot be retried. A pre-dispatch failure can retry only with
 a new reservation and approved configuration. Evidence is preserved for manual
 review; only explicitly labelled sections are parsed. Unknown amounts/servings

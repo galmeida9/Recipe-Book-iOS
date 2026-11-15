@@ -40,12 +40,19 @@ private struct TokenResponse: Decodable {
     let token_type: String
 }
 
-public actor HostedAuth: AccessTokenProvider {
+public protocol AuthenticationSession: AccessTokenProvider {
+    func hasSession() async -> Bool
+    func signIn() async throws
+    func signOut() async throws
+}
+
+public actor HostedAuth: AuthenticationSession {
     private let configuration: AuthConfiguration
     private let keychainService: String
     private var tokens: StoredTokens?
     private var refreshTask: Task<String, Error>?
     private var generation = 0
+    private var signingIn = false
 
     public init(configuration: AuthConfiguration, keychainService: String) throws {
         self.configuration = configuration
@@ -65,6 +72,13 @@ public actor HostedAuth: AccessTokenProvider {
     public func hasSession() -> Bool { tokens != nil }
 
     public func signIn() async throws {
+        guard !signingIn else {
+            throw APIError(status: 0, code: "auth_busy", message: "A sign-in is already in progress.")
+        }
+        signingIn = true
+        defer { signingIn = false }
+        generation += 1
+        let current = generation
         let verifier = try Self.randomValue()
         let state = try Self.randomValue()
         let nonce = try Self.randomValue()
@@ -84,6 +98,7 @@ public actor HostedAuth: AccessTokenProvider {
             throw APIError(status: 0, code: "auth_configuration", message: "Unable to create the sign-in URL.")
         }
         let callback = try await HostedBrowser.shared.open(authorizationURL)
+        guard generation == current else { throw CancellationError() }
         guard callback.scheme == configuration.redirectURL.scheme,
               callback.host == configuration.redirectURL.host,
               callback.path == configuration.redirectURL.path,
@@ -99,8 +114,6 @@ public actor HostedAuth: AccessTokenProvider {
               let code = parameters.first(where: { $0.name == "code" })?.value, !code.isEmpty else {
             throw APIError(status: 0, code: "auth_code", message: "The identity provider returned no authorization code.")
         }
-        generation += 1
-        let current = generation
         let response = try await exchange([
             "grant_type": "authorization_code", "code": code, "code_verifier": verifier,
             "redirect_uri": configuration.redirectURL.absoluteString
@@ -202,27 +215,34 @@ private final class HostedBrowser: NSObject, ASWebAuthenticationPresentationCont
         guard session == nil else {
             throw APIError(status: 0, code: "auth_busy", message: "A sign-in is already in progress.")
         }
+        let requestID = UUID()
+        try Task.checkCancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                self.requestID = requestID
                 self.continuation = continuation
                 let session = ASWebAuthenticationSession(url: url, callbackURLScheme: "recipebook") { [weak self] callback, error in
-                    Task { @MainActor in self?.finish(callback: callback, error: error) }
+                    Task { @MainActor in self?.finish(requestID: requestID, callback: callback, error: error) }
                 }
                 session.presentationContextProvider = self
                 session.prefersEphemeralWebBrowserSession = true
                 self.session = session
                 if !session.start() {
-                    finish(callback: nil, error: APIError(status: 0, code: "auth_browser", message: "Unable to open hosted sign-in."))
+                    finish(requestID: requestID, callback: nil, error: APIError(status: 0, code: "auth_browser", message: "Unable to open hosted sign-in."))
                 }
             }
         } onCancel: {
             Task { @MainActor in
+                guard self.requestID == requestID else { return }
                 self.session?.cancel()
-                self.finish(callback: nil, error: CancellationError())
+                self.finish(requestID: requestID, callback: nil, error: CancellationError())
             }
         }
     }
-    private func finish(callback: URL?, error: Error?) {
+    private var requestID: UUID?
+    private func finish(requestID: UUID, callback: URL?, error: Error?) {
+        guard self.requestID == requestID else { return }
+        self.requestID = nil
         let continuation = self.continuation
         self.continuation = nil
         session = nil

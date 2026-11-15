@@ -9,6 +9,9 @@ packages:
   RecipeBookUI:
     path: RecipeBookUI
 settings:
+  configs:
+    Debug:
+      ONLY_ACTIVE_ARCH: YES
   base:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: ""
@@ -47,3 +50,27 @@ targets:
         CODE_SIGN_ENTITLEMENTS: RecipeBookShare/RecipeBookShare.entitlements
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
+  RecipeBookUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [RecipeBookUITests, RecipeBook/UIServiceAdapter.swift]
+    dependencies:
+      - target: RecipeBook
+      - package: RecipeBookCore
+        product: RecipeBookCore
+      - package: RecipeBookCore
+        product: RecipeBookAuth
+      - package: RecipeBookUI
+        product: RecipeBookPresentation
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.recipebook.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: RecipeBook
+schemes:
+  RecipeBook:
+    build:
+      targets:
+        RecipeBook: all
+    test:
+      targets: [RecipeBookUITests]

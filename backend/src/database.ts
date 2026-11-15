@@ -34,7 +34,12 @@ export async function serializable<T>(work: (transaction: sql.Transaction) => Pr
       await transaction.commit();
       return result;
     } catch (error) {
-      if (!aborted) await transaction.rollback();
+      if (!aborted) {
+        try { await transaction.rollback(); }
+        catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], "Transaction failed and rollback could not be confirmed. No retry was attempted.");
+        }
+      }
       // A deadlock victim is fully rolled back by SQL. Never retry a stale
       // version, an unknown commit outcome, a charged POST or a generic error.
       if (error instanceof Error && "number" in error && error.number === 1205 && attempt < 2) {

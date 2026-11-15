@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { query, serializable, database } from "../src/database.js";
 import { RecipeBookService } from "../src/service.js";
 import { AppError } from "../src/contracts.js";
-import { ImportService, processImport } from "../src/imports.js";
+import { ImportService, processImport, importDelivery, failImportDelivery } from "../src/imports.js";
 import { ApifyProvider, type ProviderBudget, type ProviderRun } from "../src/apify.js";
 import { readRecipeImage } from "../src/images.js";
 
@@ -18,12 +18,14 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   let aliceId = "";
   let bobId = "";
   let sharedId = "";
-  const budgetMonth = "test001";
+  const budgetMonth = "t" + randomUUID().slice(0, 6);
+  const retryBudgetMonth = "r" + randomUUID().slice(0, 6);
+  let activeBudgetMonth = budgetMonth;
   let starts = 0;
   let succeeded = false;
   class FixtureProvider extends ApifyProvider {
     override async budget(): Promise<ProviderBudget> {
-      return { month: budgetMonth, spentMicros: 0, capMicros: 250_000, reserveMicros: 100_000, endsAt: new Date(Date.now() + 3_600_000) };
+      return { month: activeBudgetMonth, spentMicros: 0, capMicros: 250_000, reserveMicros: 100_000, endsAt: new Date(Date.now() + 3_600_000) };
     }
     override async start(): Promise<ProviderRun> {
       starts++;
@@ -118,7 +120,8 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       await query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
         { id: secondJob.id, deadline: new Date(Date.now() - 1000) });
     });
-    await processImport(secondJob.id, provider);
+    const expiredDelivery = (await importDelivery(secondJob.id))!;
+    await processImport(secondJob.id, provider, expiredDelivery.deadline);
     const failed = await imports.get(secondJob.id);
     assert.equal(failed.state, "failed");
     assert.equal(starts, 1);
@@ -127,6 +130,19 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     const budget = await serializable(transaction => query<{ spent: number; reserved: number }>(transaction,
       "SELECT SpentMicros AS spent,ReservedMicros AS reserved FROM dbo.ImportBudget WHERE Month=@month", { month: budgetMonth }));
     assert.deepEqual(budget[0], { spent: 200_000, reserved: 0 });
+    activeBudgetMonth = retryBudgetMonth;
+    const retried = await imports.retry(secondJob.id, failed.version);
+    assert.equal(retried.state, "queued");
+    await processImport(secondJob.id, provider, expiredDelivery.deadline);
+    await failImportDelivery(secondJob.id, provider, expiredDelivery.deadline);
+    assert.equal((await imports.get(secondJob.id)).state, "queued", "Stale deliveries and poison cannot mutate a new attempt.");
+    assert.equal(await importDelivery(secondJob.id, expiredDelivery.deadline), null);
+    assert.equal(starts, 1, "A stale attempt cannot start another charged run.");
+    const retryDelivery = (await importDelivery(secondJob.id))!;
+    await processImport(secondJob.id, provider, retryDelivery.deadline);
+    assert.equal(starts, 2);
+    await processImport(secondJob.id, provider, retryDelivery.deadline);
+    assert.equal((await imports.get(secondJob.id)).state, "review");
     const promoted = await alice.changeMember(shared.id, bobId, "owner", shared.version);
     assert.ok("version" in promoted);
     shared = (await alice.books()).find(book => book.id === shared.id)!;
@@ -157,6 +173,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       await query(transaction, "DELETE dbo.ImportRequests WHERE UserId IN(SELECT Id FROM dbo.Accounts WHERE Issuer=@issuer)", { issuer });
       await query(transaction, "DELETE dbo.ImportJobs WHERE UserId IN(SELECT Id FROM dbo.Accounts WHERE Issuer=@issuer)", { issuer });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: budgetMonth });
+      await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth });
       await query(transaction, "DELETE dbo.Accounts WHERE Issuer=@issuer", { issuer });
       await query(transaction, "DELETE dbo.AccessInvites WHERE Issuer=@issuer", { issuer });
     });

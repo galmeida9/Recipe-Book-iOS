@@ -6,7 +6,7 @@ import RecipeBookPresentation
 
 actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     private let api: APIClient
-    private let auth: HostedAuth
+    private let auth: any AuthenticationSession
     private let inbox: SharedReelInbox
     private var currentAccount: SessionAccount?
     private var bookCache: [UUID: RecipeBookCore.Book] = [:]
@@ -15,7 +15,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     private var jobCache: [UUID: RecipeBookCore.ImportJob] = [:]
     private var importKeys: [URL: UUID] = [:]
 
-    init(api: APIClient, auth: HostedAuth, inbox: SharedReelInbox) {
+    init(api: APIClient, auth: any AuthenticationSession, inbox: SharedReelInbox) {
         self.api = api
         self.auth = auth
         self.inbox = inbox

@@ -6,6 +6,7 @@ import { query, serializable } from "./database.js";
 import { account, bookAccess, RecipeBookService } from "./service.js";
 import { ApifyProvider, approvedProvider, type ProviderBudget } from "./apify.js";
 import { evidenceSchema, evidenceToReview } from "./import-evidence.js";
+import type { ImportDelivery } from "./queue.js";
 
 export function reserveBudget(spent: number, reserved: number, cap: number, amount: number): number {
   invariant([spent, reserved, cap, amount].every(Number.isSafeInteger) && spent >= 0 && reserved >= 0 && amount > 0,
@@ -111,11 +112,14 @@ export class ImportService {
       const row = await getJob(transaction, id, userId);
       assertVersion(row.version, version);
       invariant(row.state === "failed" && !row.dispatchStarted, 409, "retry_unsafe", "This job cannot be retried because a provider charge may already exist.");
+      const counts = await query<{ count: number }>(transaction,
+        "SELECT COUNT(*) AS count FROM dbo.ImportJobs WHERE UserId=@userId AND State IN('queued','running')", { userId });
+      invariant(counts[0]!.count < 3, 429, "import_limit", "At most three imports may be in progress.");
       const config = approvedProvider();
       invariant(config.reserveMicros === row.reservedMicros, 409, "provider_changed", "The approved spending cap changed.");
       await reserve(transaction, budget);
       await query(transaction, `UPDATE dbo.ImportJobs SET State='queued',Error=NULL,Version=Version+1,Deadline=@deadline WHERE Id=@id`,
-        { id, deadline: new Date(Date.now() + 10 * 60_000) });
+        { id, deadline: new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime())) });
       await query(transaction, "UPDATE dbo.ImportJobs SET BudgetMonth=@month WHERE Id=@id", { id, month: budget.month });
       return job(await getJob(transaction, id, userId));
     });
@@ -148,14 +152,18 @@ export class ImportService {
   }
 }
 
-export async function importStillActive(id: string): Promise<boolean> {
-  return serializable(async transaction => (await query<{ id: string }>(transaction,
-    "SELECT CONVERT(varchar(36),Id) AS id FROM dbo.ImportJobs WHERE Id=@id AND State IN('queued','running')", { id })).length > 0);
+export async function importDelivery(id: string, expectedDeadline?: string): Promise<ImportDelivery | null> {
+  return serializable(async transaction => {
+    const row = (await query<{ deadline: Date }>(transaction,
+      "SELECT Deadline AS deadline FROM dbo.ImportJobs WHERE Id=@id AND State IN('queued','running')", { id }))[0];
+    if (!row || (expectedDeadline !== undefined && row.deadline.toISOString() !== expectedDeadline)) return null;
+    return { id, deadline: row.deadline.toISOString() };
+  });
 }
-export async function failImportDelivery(id: string, provider = new ApifyProvider()): Promise<void> {
+export async function failImportDelivery(id: string, provider = new ApifyProvider(), expectedDeadline?: string): Promise<void> {
   const row = await serializable(async transaction => (await query<JobRow>(transaction,
     `SELECT ${columns} FROM dbo.ImportJobs WHERE Id=@id AND State IN('queued','running')`, { id }))[0]);
-  if (!row) return;
+  if (!row || (expectedDeadline !== undefined && row.deadline.toISOString() !== expectedDeadline)) return;
   if (row.providerRunId) {
     try { await provider.abort(row.providerRunId); }
     catch (error) {
@@ -166,11 +174,12 @@ export async function failImportDelivery(id: string, provider = new ApifyProvide
   await finishImport(row, null, null, "Import queue delivery retries were exhausted. No new charged job was started.");
 }
 
-export async function processImport(id: string, provider = new ApifyProvider()): Promise<void> {
+export async function processImport(id: string, provider = new ApifyProvider(), expectedDeadline?: string): Promise<void> {
   const action = await serializable(async transaction => {
     const rows = await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id });
     const row = rows[0];
-    if (!row || !["queued", "running"].includes(row.state)) return null;
+    if (!row || !["queued", "running"].includes(row.state)
+      || (expectedDeadline !== undefined && row.deadline.toISOString() !== expectedDeadline)) return null;
     const identities = await query<{ issuer: string; subject: string }>(transaction,
       "SELECT Issuer AS issuer,Subject AS subject FROM dbo.Accounts WHERE Id=@userId AND Active=1", { userId: row.userId });
     let allowed = false;
@@ -245,7 +254,8 @@ export async function processImport(id: string, provider = new ApifyProvider()):
 async function finishImport(row: JobRow, draft: string | null, evidence: string | null, error: string | null): Promise<void> {
   await serializable(async transaction => {
     const current = (await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id: row.id }))[0];
-    if (!current || !["queued", "running"].includes(current.state)) return;
+    if (!current || !["queued", "running"].includes(current.state)
+      || current.deadline.getTime() !== row.deadline.getTime()) return;
     await query(transaction, `UPDATE dbo.ImportJobs SET State=@state,Draft=@draft,Evidence=@evidence,Error=@error,Version=Version+1 WHERE Id=@id`,
       { id: row.id, state: error ? "failed" : "review", draft, evidence, error });
     // Conservative settlement: reserve the entire hard cap as spent even if the
