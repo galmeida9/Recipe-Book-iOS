@@ -190,7 +190,6 @@ extension View {
 // MARK: - Small shared views
 
 @MainActor
-
 struct RoleBadge: View {
     let role: MemberRole
 
@@ -205,7 +204,6 @@ struct RoleBadge: View {
 }
 
 @MainActor
-
 struct MetaLabel: View {
     let text: String
     let systemImage: String
@@ -236,7 +234,6 @@ struct AmountText: View {
 }
 
 @MainActor
-
 struct AccountIDView: View {
     let accountID: UserID
     @State private var copied = false

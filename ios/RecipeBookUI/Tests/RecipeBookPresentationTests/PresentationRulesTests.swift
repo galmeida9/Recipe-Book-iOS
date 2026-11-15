@@ -11,6 +11,17 @@ final class PresentationRulesTests: XCTestCase {
                    currentUserID: "me", recipes: [], members: members)
     }
 
+    // MARK: Drafts
+
+    func testEvidenceTextIsOptionalAndNotCarriedIntoEdits() {
+        XCTAssertNil(RecipeDraft().evidenceText)
+        let draft = RecipeDraft(title: "Soup", evidenceText: "caption")
+        XCTAssertEqual(draft.evidenceText, "caption")
+        let saved = RecipeDetail(summary: RecipeSummary(id: "1", bookID: "b", title: "Soup", authorID: "me", authorName: "Me"),
+                                 ingredients: [], steps: [])
+        XCTAssertNil(RecipeDraft(editing: saved).evidenceText)
+    }
+
     // MARK: Permissions
 
     func testMemberCanEditOnlyOwnRecipes() {

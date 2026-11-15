@@ -21,7 +21,8 @@ If no service is injected, the app falls back to `UnconfiguredRecipeBookService`
 
 ## Behaviour rules
 
-- Identity is the account UUID. Owners add members by account ID, and there is no email.
+- Identity is the account UUID, and there is no email. App access is granted separately by the app administrator (the awaiting-access screen shows the account ID to send them). Book owners add already-active accounts to shared books by account ID; that does not grant app access.
+- Import review shows `RecipeDraft.evidenceText` (caption, comments or transcript) as read-only, selectable "Source evidence". The UI never fills recipe fields from it.
 - Shared books: everyone can view and add recipes. Owners manage all recipes and members and can appoint several owners. Members edit and delete only their own recipes.
 - The last owner of a shared book who leaves or deletes their account must choose a new owner or delete the book. Nobody is promoted automatically.
 - Quantities are decimal strings, and `nil` means unknown. Imported amounts marked `amountNeedsReview` block saving until the user sets an amount or taps **Keep Unspecified**.

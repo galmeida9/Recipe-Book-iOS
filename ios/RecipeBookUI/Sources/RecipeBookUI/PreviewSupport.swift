@@ -162,7 +162,8 @@ actor PreviewRecipeBookService: RecipeBookService {
             IngredientLine(name: "Chickpeas", quantity: "400", unit: "g", originalText: "1 can chickpeas (400 g)"),
             IngredientLine(name: "Smoked paprika", originalText: "a good shake of paprika", amountNeedsReview: true),
         ], steps: [RecipeStep(text: "Dry the chickpeas."), RecipeStep(text: "Roast at 220 °C for 25 minutes.")],
-        sourceURL: URL(string: "https://www.instagram.com/reel/PREVIEW1/"))
+        sourceURL: URL(string: "https://www.instagram.com/reel/PREVIEW1/"),
+        evidenceText: "Caption (preview fixture): crispy chickpeas!! 1 can chickpeas (400 g), a good shake of paprika, roast hot until crunchy.")
     }
     func approveImport(id: ImportJobID, draft: RecipeDraft) async throws -> RecipeDetail {
         let saved = try await saveRecipe(draft)

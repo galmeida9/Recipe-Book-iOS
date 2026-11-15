@@ -51,7 +51,6 @@ public struct RecipeBookRootView: View {
 // MARK: - Access states
 
 @MainActor
-
 struct SignInView: View {
     let onChange: (SessionState) -> Void
     @Environment(\.recipeBookService) private var service
@@ -78,7 +77,7 @@ struct SignInView: View {
                     FeatureRow(systemImage: "checklist", title: "Shopping lists",
                                detail: "Tick what you already have; add only what you need.")
                 }
-                Text("Recipe Book is invite-only. After signing in, an owner of a book needs to add your account.")
+                Text("Recipe Book is invite-only. After signing in, the app administrator needs to grant your account access. Joining a shared book is a separate step done by its owners.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -101,7 +100,6 @@ struct SignInView: View {
 }
 
 @MainActor
-
 private struct FeatureRow: View {
     let systemImage: String
     let title: String
@@ -124,7 +122,6 @@ private struct FeatureRow: View {
 }
 
 @MainActor
-
 struct AwaitingAccessView: View {
     let accountID: UserID
     let onChange: (SessionState) -> Void
@@ -136,9 +133,9 @@ struct AwaitingAccessView: View {
             Form {
                 Section {
                     ContentUnavailableView {
-                        Label("Waiting for an invite", systemImage: "envelope.badge")
+                        Label("Waiting for access", systemImage: "envelope.badge")
                     } description: {
-                        Text("You’re signed in, but no one has added your account to Recipe Book yet. Send your account ID to someone who owns a book.")
+                        Text("You’re signed in, but your account hasn’t been granted access to Recipe Book yet. Send your account ID to the app administrator. Being added to a shared book doesn’t grant app access.")
                     }
                 }
                 Section("Your account ID") {
@@ -173,7 +170,6 @@ struct AwaitingAccessView: View {
 }
 
 @MainActor
-
 struct ProfileSetupView: View {
     let profile: UserProfile
     let onChange: (SessionState) -> Void
@@ -224,7 +220,6 @@ struct ProfileSetupView: View {
 // MARK: - Tabs
 
 @MainActor
-
 struct MainTabView: View {
     enum Tab: Hashable { case library, suggestions, imports, shopping, account }
 

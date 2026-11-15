@@ -26,8 +26,9 @@ public struct UserProfile: Equatable, Hashable, Sendable, Identifiable {
 public enum SessionState: Equatable, Sendable {
     /// Not signed in. The hosted OIDC flow itself is owned by the app layer.
     case signedOut
-    /// Signed in, but this account has not been added to Recipe Book yet (invite-only).
-    /// The account ID is shown so the user can share it with an owner.
+    /// Signed in, but the app administrator has not granted this account access yet (invite-only).
+    /// App access is separate from book membership. The account ID is shown so the user can send
+    /// it to the administrator.
     case awaitingInvite(accountID: UserID)
     /// Invited, but first-run setup (display name) is incomplete.
     case needsSetup(UserProfile)
@@ -184,10 +185,13 @@ public struct RecipeDraft: Equatable, Sendable {
     public var ingredients: [IngredientLine]
     public var steps: [RecipeStep]
     public var sourceURL: URL?
+    /// Raw source evidence for imports (caption, comments, transcript), shown read-only during review.
+    /// Display only: the UI never derives recipe values from it.
+    public var evidenceText: String?
 
     public init(recipeID: RecipeID? = nil, bookID: BookID? = nil, title: String = "", servings: Int? = nil,
                 totalMinutes: Int? = nil, ingredients: [IngredientLine] = [], steps: [RecipeStep] = [],
-                sourceURL: URL? = nil) {
+                sourceURL: URL? = nil, evidenceText: String? = nil) {
         self.recipeID = recipeID
         self.bookID = bookID
         self.title = title
@@ -196,6 +200,7 @@ public struct RecipeDraft: Equatable, Sendable {
         self.ingredients = ingredients
         self.steps = steps
         self.sourceURL = sourceURL
+        self.evidenceText = evidenceText
     }
 
     public init(editing recipe: RecipeDetail) {

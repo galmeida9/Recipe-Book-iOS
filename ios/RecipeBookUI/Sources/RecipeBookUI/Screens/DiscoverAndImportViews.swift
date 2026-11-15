@@ -112,7 +112,6 @@ struct SuggestionsView: View {
 }
 
 @MainActor
-
 private struct SuggestionRow: View {
     let suggestion: RecipeSuggestion
 
@@ -202,7 +201,6 @@ struct WrapLayout: Layout {
 // MARK: - Imports
 
 @MainActor
-
 struct ImportsView: View {
     @Environment(\.recipeBookService) private var service
     @State private var state: LoadState<[ImportJob]> = .loading
@@ -331,7 +329,6 @@ struct ImportReviewRoute: Hashable {
 }
 
 @MainActor
-
 struct ImportJobRow: View {
     let job: ImportJob
 

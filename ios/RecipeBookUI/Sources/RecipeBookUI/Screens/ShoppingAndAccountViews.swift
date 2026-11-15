@@ -5,7 +5,6 @@ import RecipeBookPresentation
 // MARK: - Shopping lists (personal)
 
 @MainActor
-
 struct ShoppingListsView: View {
     @Environment(\.recipeBookService) private var service
     @State private var state: LoadState<[ShoppingListSummary]> = .loading
@@ -98,7 +97,6 @@ struct ShoppingListsView: View {
 }
 
 @MainActor
-
 struct ShoppingListView: View {
     let listID: ShoppingListID
     let title: String
@@ -268,7 +266,6 @@ struct ShoppingListView: View {
 // MARK: - Account
 
 @MainActor
-
 struct AccountView: View {
     let profile: UserProfile
     let onChange: (SessionState) -> Void

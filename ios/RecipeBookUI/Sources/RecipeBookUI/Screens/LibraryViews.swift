@@ -3,7 +3,6 @@ import SwiftUI
 import RecipeBookPresentation
 
 @MainActor
-
 struct LibraryView: View {
     @Environment(\.recipeBookService) private var service
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -120,7 +119,6 @@ struct BookCover: View {
 }
 
 @MainActor
-
 struct CreateBookSheet: View {
     let onCreated: (BookSummary) -> Void
     @Environment(\.recipeBookService) private var service
@@ -180,7 +178,6 @@ struct CreateBookSheet: View {
 // MARK: - Book
 
 @MainActor
-
 struct BookView: View {
     let summary: BookSummary
     @Environment(\.recipeBookService) private var service
@@ -327,7 +324,6 @@ struct BookView: View {
 }
 
 @MainActor
-
 struct RecipeRow: View {
     let recipe: RecipeSummary
     let showAuthor: Bool
@@ -354,7 +350,6 @@ struct RecipeRow: View {
 // MARK: - Members
 
 @MainActor
-
 struct MembersView: View {
     let bookID: BookID
     let onChanged: () -> Void
@@ -531,7 +526,6 @@ struct LastOwnerResolutionPicker: View {
 }
 
 @MainActor
-
 struct LeaveBookSheet: View {
     let book: BookDetail
     let onLeft: () -> Void

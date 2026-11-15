@@ -3,7 +3,6 @@ import SwiftUI
 import RecipeBookPresentation
 
 @MainActor
-
 struct RecipeDetailView: View {
     let route: RecipeRoute
     @Environment(\.recipeBookService) private var service
@@ -180,7 +179,6 @@ struct RecipeDetailView: View {
 }
 
 @MainActor
-
 struct SectionTitle: View {
     let text: String
     init(_ text: String) { self.text = text }
@@ -193,7 +191,6 @@ struct SectionTitle: View {
 }
 
 @MainActor
-
 struct IngredientDisplayRow: View {
     let line: IngredientLine
     @ScaledMetric(relativeTo: .body) private var amountWidth: CGFloat = 76
@@ -222,7 +219,6 @@ struct IngredientDisplayRow: View {
 // MARK: - Have / need → shopping list
 
 @MainActor
-
 struct AddToShoppingListSheet: View {
     let recipe: RecipeDetail
     @Environment(\.recipeBookService) private var service
@@ -335,6 +331,35 @@ struct AddToShoppingListSheet: View {
 
 // MARK: - Editor
 
+/// Read-only, selectable source text captured from an imported Reel. Nothing here is copied into
+/// the recipe automatically.
+@MainActor
+struct SourceEvidenceSection: View {
+    let text: String
+    @State private var expanded = false
+
+    private var isLong: Bool { text.count > 400 }
+
+    var body: some View {
+        Section {
+            Text(text)
+                .font(.callout)
+                .lineLimit(expanded || !isLong ? nil : 8)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Source text: \(text)")
+            if isLong {
+                Button(expanded ? "Show Less" : "Show All") { expanded.toggle() }
+                    .accessibilityHint(expanded ? "Collapses the source text" : "Shows the full source text")
+            }
+        } header: {
+            Label("Source evidence", systemImage: "text.quote")
+        } footer: {
+            Text("Caption, comments or transcript from the Reel. Select and copy what you need; amounts aren’t filled in for you.")
+        }
+    }
+}
+
 /// Manual recipe editor, also used to review imported drafts.
 @MainActor
 struct RecipeEditorView: View {
@@ -390,6 +415,10 @@ struct RecipeEditorView: View {
                 } footer: {
                     if books.isEmpty { Text("Create a book in the Library first.") }
                 }
+            }
+
+            if let evidence = draft.evidenceText?.trimmingCharacters(in: .whitespacesAndNewlines), !evidence.isEmpty {
+                SourceEvidenceSection(text: evidence)
             }
 
             Section("Recipe") {
@@ -497,7 +526,6 @@ struct RecipeEditorView: View {
 }
 
 @MainActor
-
 struct IngredientEditorRow: View {
     @Binding var line: IngredientLine
 
