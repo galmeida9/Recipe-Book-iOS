@@ -64,6 +64,8 @@ jobs:
           APP=build/Build/Products/Debug-iphoneos/RecipeBook.app
           test -f "$APP/RecipeBook"
           test -f "$APP/PlugIns/RecipeBookShare.appex/RecipeBookShare"
+          test -f "$APP/Assets.car"
+          test -d "$APP/RecipeBookUI_RecipeBookUI.bundle"
           test "$(plutil -extract RecipeBookInstallationCheck raw -o - "$APP/Info.plist")" = "$CHECK"
           if find "$APP" \( -name embedded.mobileprovision -o -name '*.p12' -o -name '*.p8' \) | grep -q .; then exit 1; fi
           mkdir -p installation-payload/Payload

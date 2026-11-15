@@ -63,14 +63,19 @@ struct RecipeBookApp: App {
             }
         }
         .onOpenURL { url in
-            if GoogleAuth.handle(url) { return }
-            if let reel = ReelURL.canonicalize(url) { incomingReel = reel }
-            else if url.scheme == "recipebook", url.host == "import" { loadInbox() }
+            switch IncomingAppURL.route(url) {
+            case .oauth: _ = GoogleAuth.handle(url)
+            case .reel(let reel): incomingReel = reel
+            case .importInbox:
+                if AppConfiguration.importsEnabled { loadInbox() }
+                else { inboxError = "Reel importing is not enabled for this core trial. Saved shared links remain queued until imports are available." }
+            case .ignored: break
+            }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, !installationCheck { loadInbox() }
+            if phase == .active, !installationCheck, AppConfiguration.importsEnabled { loadInbox() }
         }
-        .task { if !installationCheck { loadInbox() } }
+        .task { if !installationCheck, AppConfiguration.importsEnabled { loadInbox() } }
         .alert("Unable to read shared Reel", isPresented: Binding(get: { inboxError != nil }, set: { if !$0 { inboxError = nil } })) {
             Button("OK") { inboxError = nil }
         } message: { Text(inboxError ?? "") }

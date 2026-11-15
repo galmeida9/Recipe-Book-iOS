@@ -14,9 +14,9 @@ final class LaunchTests: XCTestCase {
     func testUnconfiguredAppShowsExplicitSetupStateWithoutFixtureData() {
         let app = XCUIApplication()
         app.launch()
-        let inboxAlert = app.alerts["Unable to read shared Reel"]
-        if inboxAlert.waitForExistence(timeout: 2) { inboxAlert.buttons["OK"].tap() }
+        XCTAssertFalse(app.alerts["Unable to read shared Reel"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.staticTexts["Service setup required"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.alerts["Unable to read shared Reel"].exists)
         XCTAssertFalse(app.staticTexts["Preview Kitchen"].exists)
     }
 }

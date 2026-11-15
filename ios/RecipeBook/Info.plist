@@ -11,6 +11,7 @@
 <key>UILaunchScreen</key><dict/>
 <key>RecipeBookAppGroup</key><string>$(RECIPEBOOK_APP_GROUP)</string>
 <key>RecipeBookInstallationCheck</key><string>$(RECIPEBOOK_INSTALLATION_CHECK)</string>
+<key>RecipeBookImportsEnabled</key><string>$(RECIPEBOOK_IMPORTS_ENABLED)</string>
 <key>RecipeBookAPIURL</key><string>$(RECIPEBOOK_API_URL)</string>
 <key>CFBundleURLTypes</key><array><dict>
 <key>CFBundleURLSchemes</key><array><string>recipebook</string></array>

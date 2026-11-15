@@ -4,6 +4,7 @@ import RecipeBookAuth
 import RecipeBookPresentation
 
 enum AppConfiguration {
+    static var importsEnabled: Bool { Bundle.main.object(forInfoDictionaryKey: "RecipeBookImportsEnabled") as? String == "YES" }
     static func appGroup() throws -> String { try SharedAppGroup.current() }
     @MainActor static func service() throws -> any RecipeBookPresentation.RecipeBookService {
         let configuration = try GoogleAuthConfiguration(apiBaseURL: url("RecipeBookAPIURL"))

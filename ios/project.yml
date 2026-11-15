@@ -18,11 +18,12 @@ settings:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: ""
     RECIPEBOOK_APP_GROUP: group.com.recipebook.shared
+    RECIPEBOOK_IMPORTS_ENABLED: NO
 targets:
   RecipeBook:
     type: application
     platform: iOS
-    sources: [RecipeBook]
+    sources: [RecipeBook, RecipeBookUI/AppIcon/Assets.xcassets]
     dependencies:
       - package: RecipeBookCore
         product: RecipeBookCore
@@ -39,6 +40,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.recipebook.app
         INFOPLIST_FILE: RecipeBook/Info.plist
         CODE_SIGN_ENTITLEMENTS: RecipeBook/RecipeBook.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   RecipeBookShare:
     type: app-extension
     platform: iOS
