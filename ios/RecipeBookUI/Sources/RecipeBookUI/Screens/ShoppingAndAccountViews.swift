@@ -127,18 +127,37 @@ struct ShoppingListView: View {
     }
 
     private func content(_ list: ShoppingList) -> some View {
-        let toBuy = list.items.filter { !$0.isBought }
-        let bought = list.items.filter(\.isBought)
+        let generated = ShoppingListRules.generated(list.items)
+        let manual = list.items.filter { !$0.isGenerated }
+        let toBuy = manual.filter { !$0.isBought }
+        let bought = manual.filter(\.isBought)
         return List {
             if list.items.isEmpty {
                 ContentUnavailableView("Nothing on this list",
                                        systemImage: "cart",
-                                       description: Text("Add items below, or from a recipe’s ingredients."))
+                                       description: Text("Add items below, from a recipe’s ingredients, or by planning your week."))
                     .listRowBackground(Color.clear)
             }
-            if !toBuy.isEmpty {
-                Section("To buy") {
+            if !generated.isEmpty {
+                Section {
+                    ForEach(generated) { itemRow($0) }
+                } header: {
+                    Label("Automatic · from your meal plan", systemImage: "wand.and.stars")
+                        .foregroundStyle(RecipeBookTheme.accent)
+                        .accessibilityLabel("Automatic items from your meal plan")
+                } footer: {
+                    Text(generatedFooter(generated))
+                }
+            }
+            if !toBuy.isEmpty || !generated.isEmpty {
+                Section {
+                    if toBuy.isEmpty {
+                        Text("Nothing added by you yet.").foregroundStyle(.secondary)
+                    }
                     ForEach(toBuy) { itemRow($0) }
+                } header: {
+                    Label(generated.isEmpty ? "To buy" : "Added by you", systemImage: "hand.point.up.left")
+                        .labelStyle(.titleOnly)
                 }
             }
             if !bought.isEmpty {
@@ -149,6 +168,17 @@ struct ShoppingListView: View {
         }
         .refreshable { reload += 1 }
         .bottomControlBar { addBar }
+    }
+
+    private func generatedFooter(_ items: [ShoppingItem]) -> String {
+        var weeks: [PlanDate] = []
+        for item in items {
+            if case .generated(let provenance) = item.origin, !weeks.contains(provenance.weekStart) {
+                weeks.append(provenance.weekStart)
+            }
+        }
+        let when = weeks.map { PlanDateText.weekTitle($0).lowercased() }.joined(separator: ", ")
+        return "Added automatically for your plan (\(when)). They update when the plan changes; change the plan to remove them."
     }
 
     private func itemRow(_ item: ShoppingItem) -> some View {
@@ -172,27 +202,43 @@ struct ShoppingListView: View {
                         if let amount = QuantityText.display(quantity: item.quantity, unit: item.unit) {
                             Text(amount).monospacedDigit()
                         }
-                        if let source = item.sourceRecipeTitle {
-                            Text("for \(source)").lineLimit(1)
+                        if let source = sourceText(item) {
+                            Text("for \(source)").lineLimit(2)
                         }
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if item.isGenerated {
+                    Image(systemName: "wand.and.stars")
+                        .font(.caption)
+                        .foregroundStyle(RecipeBookTheme.accent.opacity(0.8))
+                        .accessibilityHidden(true)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(pending.contains(item.id))
         .accessibilityElement(children: .combine)
-        .accessibilityValue(item.isBought ? "Bought" : "Not bought")
+        .accessibilityValue((item.isBought ? "Bought" : "Not bought") + (item.isGenerated ? ", added automatically from your plan" : ""))
         .accessibilityHint(item.isBought ? "Double-tap to mark as not bought" : "Double-tap to mark as bought")
         .swipeActions {
-            Button("Delete", systemImage: "trash", role: .destructive) {
-                mutate(item.id) { try await service.removeShoppingItem(item.id, from: listID) }
+            // Generated items are owned by the plan; only manual items can be deleted here.
+            if !item.isGenerated {
+                Button("Delete", systemImage: "trash", role: .destructive) {
+                    mutate(item.id) { try await service.removeShoppingItem(item.id, from: listID) }
+                }
             }
         }
+    }
+
+    private func sourceText(_ item: ShoppingItem) -> String? {
+        if case .generated(let provenance) = item.origin, !provenance.recipeTitles.isEmpty {
+            return ListFormatter.localizedString(byJoining: provenance.recipeTitles)
+        }
+        return item.sourceRecipeTitle
     }
 
     @ViewBuilder

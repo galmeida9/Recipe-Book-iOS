@@ -196,4 +196,104 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertNil(AccountIDInput.normalize("ana@example.com"))
         XCTAssertNil(AccountIDInput.normalize(""))
     }
+
+    // MARK: Weekly plan
+
+    func testWeekStartIsMondayAndDaysAreOrdered() {
+        let utc = TimeZone(identifier: "UTC")!
+        let sunday = PlanCalendar.date(from: "2025-06-15")!
+        XCTAssertEqual(PlanCalendar.weekStart(containing: sunday, in: utc), "2025-06-09")
+        let monday = PlanCalendar.date(from: "2025-06-09")!
+        XCTAssertEqual(PlanCalendar.weekStart(containing: monday, in: utc), "2025-06-09")
+        XCTAssertEqual(PlanCalendar.days(of: "2025-06-09"),
+                       ["2025-06-09", "2025-06-10", "2025-06-11", "2025-06-12", "2025-06-13", "2025-06-14", "2025-06-15"])
+        XCTAssertEqual(PlanCalendar.days(of: "not-a-date"), [])
+        XCTAssertEqual(PlanCalendar.shift("2025-06-09", weeks: 1), "2025-06-16")
+        XCTAssertEqual(PlanCalendar.shift("2025-01-06", weeks: -1), "2024-12-30")
+    }
+
+    func testDayRulesExpandToSevenStyles() {
+        XCTAssertEqual(PlanDayRule.wholeWeek(.simple).dayStyles, Array(repeating: .simple, count: 7))
+        XCTAssertEqual(PlanDayRule.weekdaysAndWeekend(weekdays: .simple, weekend: .full).dayStyles,
+                       [.simple, .simple, .simple, .simple, .simple, .full, .full])
+        XCTAssertEqual(PlanDayRule.weekdaysAndWeekend(weekdays: nil, weekend: .complicated).plannedDayCount, 2)
+        let specific = PlanDayRule.specificDays([.tuesday: .complicated, .sunday: .full])
+        XCTAssertEqual(specific.dayStyles, [nil, .complicated, nil, nil, nil, nil, .full])
+        XCTAssertEqual(specific.plannedDayCount, 2)
+    }
+
+    func testReplacementCandidatesPreferLabelledStyleAndExcludeCurrent() {
+        func recipe(_ id: String, _ title: String, _ style: MealStyle?) -> RecipeSummary {
+            RecipeSummary(id: id, bookID: "b", title: title, authorID: "me", authorName: "Me", mealStyle: style, version: 1)
+        }
+        let recipes = [recipe("1", "Zucchini", .simple), recipe("2", "apple tart", .full),
+                       recipe("3", "Bean stew", .simple), recipe("4", "Curry", nil)]
+        let day = PlanDay(date: "2025-06-09", mealStyle: .simple,
+                          slot: PlanSlot(id: "s", recipeID: "3", recipeVersion: 1, servings: nil, recipe: nil))
+        XCTAssertEqual(PlanRules.replacementCandidates(recipes, for: day).map(\.id), ["1", "2", "4"])
+        let unstyled = PlanDay(date: "2025-06-09", mealStyle: nil, slot: nil)
+        XCTAssertEqual(PlanRules.replacementCandidates(recipes, for: unstyled).map(\.id), ["2", "3", "4", "1"])
+        let counts = PlanRules.styleCounts(recipes)
+        XCTAssertEqual(counts.counts[.simple], 2)
+        XCTAssertEqual(counts.unlabelled, 1)
+    }
+
+    func testUnknownServingsAreNeverInvented() {
+        XCTAssertEqual(PlanRules.servingsText(nil), "Usual servings")
+        XCTAssertEqual(PlanRules.servingsText(1), "1 serving")
+        XCTAssertEqual(PlanRules.servingsText(4), "4 servings")
+        XCTAssertNil(PlanReplacement(recipeID: "r", recipeVersion: 2, servings: nil).servings)
+    }
+
+    func testGeneratedShoppingItemsAreSeparatedFromManual() {
+        let provenance = PlanProvenance(planID: "p", bookID: "b", weekStart: "2025-06-09", planVersion: 3,
+                                        recipeTitles: ["Soup"])
+        let items = [ShoppingItem(id: "m", name: "Milk"),
+                     ShoppingItem(id: "g", name: "Leeks", origin: .generated(provenance)),
+                     ShoppingItem(id: "g2", name: "Stock", isBought: true, origin: .generated(provenance))]
+        XCTAssertEqual(ShoppingItem(id: "x", name: "X").origin, .manual)
+        XCTAssertEqual(ShoppingListRules.generated(items).map(\.id), ["g", "g2"])
+        XCTAssertEqual(ShoppingListRules.manual(items).map(\.id), ["m"])
+    }
+
+    func testStepOrderingMovesWithinBounds() {
+        let steps = [RecipeStep(id: "a", text: "A"), RecipeStep(id: "b", text: "B"), RecipeStep(id: "c", text: "C")]
+        XCTAssertEqual(StepOrdering.move(steps, id: "b", by: -1).map(\.id), ["b", "a", "c"])
+        XCTAssertEqual(StepOrdering.move(steps, id: "b", by: 1).map(\.id), ["a", "c", "b"])
+        XCTAssertEqual(StepOrdering.move(steps, id: "a", by: -1).map(\.id), ["a", "b", "c"])
+        XCTAssertEqual(StepOrdering.move(steps, id: "missing", by: 1).map(\.id), ["a", "b", "c"])
+    }
+
+    func testWatchURLOnlyForInstagramReels() {
+        XCTAssertEqual(ReelLink.watchURL(for: URL(string: "https://instagram.com/reel/AbC_1-2/?igsh=x"))?.absoluteString,
+                       "https://www.instagram.com/reel/AbC_1-2/")
+        XCTAssertNil(ReelLink.watchURL(for: URL(string: "https://example.com/reel/abc/")))
+        XCTAssertNil(ReelLink.watchURL(for: URL(string: "https://www.instagram.com/p/abc/")))
+        XCTAssertNil(ReelLink.watchURL(for: nil))
+    }
+
+    func testNewDraftFieldsDefaultToUnset() {
+        let draft = RecipeDraft()
+        XCTAssertNil(draft.mealStyle)
+        XCTAssertNil(draft.coverImage)
+        XCTAssertEqual(draft.coverImageEdit, .unchanged)
+    }
+
+    func testUnconfiguredPlannerNeverSucceeds() async {
+        let service = UnconfiguredRecipeBookService()
+        do {
+            _ = try await service.readWeek(bookID: "b", weekStart: "2025-06-09")
+            XCTFail("Unconfigured service must not read plans")
+        } catch {
+            XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
+        }
+        do {
+            _ = try await service.generateWeek(bookID: "b", weekStart: "2025-06-09",
+                                               dayStyles: PlanDayRule.wholeWeek(.simple).dayStyles,
+                                               listID: "l", expectedVersion: nil)
+            XCTFail("Unconfigured service must not generate plans")
+        } catch {
+            XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
+        }
+    }
 }

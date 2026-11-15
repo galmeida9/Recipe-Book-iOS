@@ -14,7 +14,7 @@ public enum FixtureShowcaseScreen: String, CaseIterable, Sendable {
     case library
     case recipeDetail = "recipe-detail"
     case shopping
-
+    case plan
     public static let launchArgument = "-RecipeBookFixtureShowcase"
 
     /// The screen named after `launchArgument`, or nil when the flag is absent or unknown.
@@ -74,6 +74,10 @@ public struct FixtureShowcaseView: View {
             }
             .environment(\.recipeBookService, service)
             .tint(RecipeBookTheme.accent)
+        case .plan:
+            PlanView()
+                .environment(\.recipeBookService, service)
+                .tint(RecipeBookTheme.accent)
         }
     }
 }

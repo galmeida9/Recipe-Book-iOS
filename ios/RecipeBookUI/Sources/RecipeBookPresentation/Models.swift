@@ -9,6 +9,19 @@ public typealias RecipeID = String
 public typealias ImportJobID = String
 public typealias ShoppingListID = String
 public typealias ShoppingItemID = String
+public typealias PlanID = String
+/// Date-only calendar day, `"yyyy-MM-dd"` (ISO 8601, Gregorian). No time zone or time component.
+public typealias PlanDate = String
+
+/// Opaque reference to a stored image (recipe cover, Reel thumbnail). The app layer resolves the
+/// bytes through `RecipeBookService.imageData(_:)`; the UI never fetches arbitrary URLs.
+public struct ImageRef: Equatable, Hashable, Sendable {
+    public var id: String
+
+    public init(id: String) {
+        self.id = id
+    }
+}
 
 // MARK: - Session / access
 
@@ -99,9 +112,12 @@ public struct BookSummary: Equatable, Hashable, Sendable, Identifiable {
     public var recipeCount: Int
     public var memberCount: Int
     public var storage: BookStorage
+    /// Real image chosen for the book cover (e.g. one of its recipe covers). `nil` draws a
+    /// non-photographic placeholder.
+    public var coverImage: ImageRef?
 
     public init(id: BookID, name: String, kind: BookKind, myRole: MemberRole, recipeCount: Int, memberCount: Int,
-                storage: BookStorage = .account) {
+                storage: BookStorage = .account, coverImage: ImageRef? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -109,6 +125,7 @@ public struct BookSummary: Equatable, Hashable, Sendable, Identifiable {
         self.recipeCount = recipeCount
         self.memberCount = memberCount
         self.storage = storage
+        self.coverImage = coverImage
     }
 }
 
@@ -132,9 +149,15 @@ public struct RecipeSummary: Equatable, Hashable, Sendable, Identifiable {
     public var authorName: String
     public var totalMinutes: Int?
     public var servings: Int?
+    /// Explicit, user-chosen meal style. `nil` = not labelled; the UI never infers one.
+    public var mealStyle: MealStyle?
+    public var coverImage: ImageRef?
+    /// Current recipe version, used by planner replacements. `nil` when the source has none.
+    public var version: Int?
 
     public init(id: RecipeID, bookID: BookID, title: String, authorID: UserID, authorName: String,
-                totalMinutes: Int? = nil, servings: Int? = nil) {
+                totalMinutes: Int? = nil, servings: Int? = nil, mealStyle: MealStyle? = nil,
+                coverImage: ImageRef? = nil, version: Int? = nil) {
         self.id = id
         self.bookID = bookID
         self.title = title
@@ -142,6 +165,35 @@ public struct RecipeSummary: Equatable, Hashable, Sendable, Identifiable {
         self.authorName = authorName
         self.totalMinutes = totalMinutes
         self.servings = servings
+        self.mealStyle = mealStyle
+        self.coverImage = coverImage
+        self.version = version
+    }
+}
+
+/// Explicit meal-style label set by the user on a recipe and chosen per day in the planner.
+/// "Full meal" is a user label, not inferred from duration or course count.
+public enum MealStyle: String, Equatable, Hashable, Sendable, CaseIterable, Identifiable {
+    case simple
+    case complicated
+    case full
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .simple: return "Simple"
+        case .complicated: return "More complicated"
+        case .full: return "Full meal"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .simple: return "leaf"
+        case .complicated: return "flame"
+        case .full: return "fork.knife"
+        }
     }
 }
 
@@ -235,10 +287,16 @@ public struct RecipeDraft: Equatable, Sendable {
     /// Raw source evidence for imports (caption, comments, transcript), shown read-only during review.
     /// Display only: the UI never derives recipe values from it.
     public var evidenceText: String?
+    public var mealStyle: MealStyle?
+    /// Current cover (existing recipe cover or the imported Reel thumbnail).
+    public var coverImage: ImageRef?
+    /// What saving should do to the cover. The UI only sets this from a user photo choice.
+    public var coverImageEdit: CoverImageEdit
 
     public init(recipeID: RecipeID? = nil, bookID: BookID? = nil, title: String = "", servings: Int? = nil,
                 totalMinutes: Int? = nil, ingredients: [IngredientLine] = [], steps: [RecipeStep] = [],
-                sourceURL: URL? = nil, evidenceText: String? = nil) {
+                sourceURL: URL? = nil, evidenceText: String? = nil, mealStyle: MealStyle? = nil,
+                coverImage: ImageRef? = nil, coverImageEdit: CoverImageEdit = .unchanged) {
         self.recipeID = recipeID
         self.bookID = bookID
         self.title = title
@@ -248,12 +306,100 @@ public struct RecipeDraft: Equatable, Sendable {
         self.steps = steps
         self.sourceURL = sourceURL
         self.evidenceText = evidenceText
+        self.mealStyle = mealStyle
+        self.coverImage = coverImage
+        self.coverImageEdit = coverImageEdit
     }
 
     public init(editing recipe: RecipeDetail) {
         self.init(recipeID: recipe.id, bookID: recipe.summary.bookID, title: recipe.summary.title,
                   servings: recipe.summary.servings, totalMinutes: recipe.summary.totalMinutes,
-                  ingredients: recipe.ingredients, steps: recipe.steps, sourceURL: recipe.sourceURL)
+                  ingredients: recipe.ingredients, steps: recipe.steps, sourceURL: recipe.sourceURL,
+                  mealStyle: recipe.summary.mealStyle, coverImage: recipe.summary.coverImage)
+    }
+}
+
+public enum CoverImageEdit: Equatable, Hashable, Sendable {
+    case unchanged
+    /// JPEG chosen by the user, already downscaled (longest side ≤ 1600 px) by the UI.
+    case replace(jpegData: Data)
+    case remove
+}
+
+// MARK: - Weekly plan
+
+/// One generated week for one book. `days` always has seven entries, Monday first.
+public struct WeeklyPlan: Equatable, Sendable, Identifiable {
+    public var id: PlanID
+    public var bookID: BookID
+    /// Monday of the week.
+    public var weekStart: PlanDate
+    public var days: [PlanDay]
+    /// Optimistic-concurrency version; passed back on every mutation.
+    public var version: Int
+    /// Explicit domain warnings (no matching recipes, repeats, stale recipes). Shown verbatim.
+    public var warnings: [String]
+    /// List that receives the automatically generated ingredients.
+    public var shoppingListID: ShoppingListID?
+
+    public init(id: PlanID, bookID: BookID, weekStart: PlanDate, days: [PlanDay], version: Int,
+                warnings: [String] = [], shoppingListID: ShoppingListID? = nil) {
+        self.id = id
+        self.bookID = bookID
+        self.weekStart = weekStart
+        self.days = days
+        self.version = version
+        self.warnings = warnings
+        self.shoppingListID = shoppingListID
+    }
+}
+
+public struct PlanDay: Equatable, Sendable, Identifiable {
+    public var date: PlanDate
+    /// Requested style for the day; `nil` = not planned.
+    public var mealStyle: MealStyle?
+    /// `nil` with a style means nothing in the book matched.
+    public var slot: PlanSlot?
+
+    public var id: PlanDate { date }
+
+    public init(date: PlanDate, mealStyle: MealStyle?, slot: PlanSlot?) {
+        self.date = date
+        self.mealStyle = mealStyle
+        self.slot = slot
+    }
+}
+
+public struct PlanSlot: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var recipeID: RecipeID
+    public var recipeVersion: Int
+    /// `nil` = the recipe's usual yield (unknown); never shown as an invented number.
+    public var servings: Int?
+    /// Current accessible recipe, hydrated for display. `nil` when deleted or no longer accessible.
+    public var recipe: RecipeSummary?
+
+    public init(id: String, recipeID: RecipeID, recipeVersion: Int, servings: Int?, recipe: RecipeSummary?) {
+        self.id = id
+        self.recipeID = recipeID
+        self.recipeVersion = recipeVersion
+        self.servings = servings
+        self.recipe = recipe
+    }
+}
+
+/// Replacement for one planned day. Passing `nil` instead clears the day.
+public struct PlanReplacement: Equatable, Sendable {
+    public var recipeID: RecipeID
+    /// `nil` only if the summary carried no version; the adapter must resolve it or throw.
+    public var recipeVersion: Int?
+    /// Servings for the chosen recipe: its own normal yield (`nil` = unknown, never invented).
+    public var servings: Int?
+
+    public init(recipeID: RecipeID, recipeVersion: Int?, servings: Int?) {
+        self.recipeID = recipeID
+        self.recipeVersion = recipeVersion
+        self.servings = servings
     }
 }
 
@@ -325,15 +471,47 @@ public struct ShoppingItem: Equatable, Hashable, Sendable, Identifiable {
     public var unit: String?
     public var isBought: Bool
     public var sourceRecipeTitle: String?
+    public var origin: ShoppingItemOrigin
 
     public init(id: ShoppingItemID, name: String, quantity: String? = nil, unit: String? = nil,
-                isBought: Bool = false, sourceRecipeTitle: String? = nil) {
+                isBought: Bool = false, sourceRecipeTitle: String? = nil, origin: ShoppingItemOrigin = .manual) {
         self.id = id
         self.name = name
         self.quantity = quantity
         self.unit = unit
         self.isBought = isBought
         self.sourceRecipeTitle = sourceRecipeTitle
+        self.origin = origin
+    }
+
+    public var isGenerated: Bool {
+        if case .generated = origin { return true }
+        return false
+    }
+}
+
+/// Manual items are added by the user. Generated items are owned by the weekly plan and reconciled
+/// on every plan change, so the UI does not offer deleting them.
+public enum ShoppingItemOrigin: Equatable, Hashable, Sendable {
+    case manual
+    case generated(PlanProvenance)
+}
+
+public struct PlanProvenance: Equatable, Hashable, Sendable {
+    public var planID: PlanID
+    public var bookID: BookID
+    public var weekStart: PlanDate
+    /// Plan version the item was generated at (needed when checking it off).
+    public var planVersion: Int
+    /// Current titles of the contributing recipes, for display only.
+    public var recipeTitles: [String]
+
+    public init(planID: PlanID, bookID: BookID, weekStart: PlanDate, planVersion: Int, recipeTitles: [String]) {
+        self.planID = planID
+        self.bookID = bookID
+        self.weekStart = weekStart
+        self.planVersion = planVersion
+        self.recipeTitles = recipeTitles
     }
 }
 

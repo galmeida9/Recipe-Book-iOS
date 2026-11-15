@@ -4,7 +4,7 @@ Original SwiftUI design and screens for **Recipe Book**. This is a local Swift p
 
 | Product | Platforms | Contents |
 | --- | --- | --- |
-| `RecipeBookPresentation` | any Swift platform | UI value types, the `RecipeBookService` protocol, and portable presentation rules (permissions, leave rules, quantity parsing, Reel link validation, draft validation, have/need selection) |
+| `RecipeBookPresentation` | any Swift platform | UI value types, the `RecipeBookService` protocol, and portable presentation rules (permissions, leave rules, quantity parsing, Reel link validation, draft validation, have/need selection, weekly-plan day rules, step ordering) |
 | `RecipeBookUI` | iOS 17+ (`#if os(iOS)`) | SwiftUI screens, theme and components |
 
 ## Integration
@@ -14,8 +14,10 @@ Original SwiftUI design and screens for **Recipe Book**. This is a local Swift p
 ```
 
 1. Implement `RecipeBookService` (in `RecipeBookPresentation`) in the app target on top of RecipeBookCore. Every method must map to a real backend operation and throw on failure. Never return fabricated success.
-2. Show `RecipeBookRootView(service: adapter, incomingReel: $sharedReelURL)`. This view renders sign-in (a single "Continue with Google" action that calls `signIn()`, plus "Continue without signing in"; no Apple or Microsoft account options), awaiting invite (shows the account ID), profile setup and the tab app: Library, Cook, Imports, Shopping and Account. The tab app is used both signed in and as an on-device guest.
-3. For links from the share inbox, set `incomingReel` or present `ReelImportConfirmView(url:service:onFinished:)`. Nothing is submitted without the user tapping Import. Acknowledge the inbox entry in `onFinished`.
+2. Show `RecipeBookRootView(service: adapter, incomingReel: $sharedReelURL)`. This view renders sign-in (a single "Continue with Google" action that calls `signIn()`, plus "Continue without signing in"; no Apple or Microsoft account options), awaiting invite (shows the account ID), profile setup and the tab app: Library, Plan, Shopping and Account. There is no Imports tab. The tab app is used both signed in and as an on-device guest.
+3. For links from the share inbox, set `incomingReel` or present `ReelImportConfirmView(url:service:onFinished:)`. Both open the same inline import flow (`ReelImportFlowView`) used by Add Recipe › Paste Instagram Link: confirm, live progress, editable review with source evidence, destination book, save. Nothing is submitted without the user tapping Import. Acknowledge the inbox entry in `onFinished`. Unfinished imports appear as "Imports in progress" cards on the Library and reopen the same flow.
+4. Images: `imageData(_:)` returns bytes for `ImageRef` covers (books, recipes, imported Reel thumbnails). Saving a draft applies `RecipeDraft.coverImageEdit` (`.unchanged`, `.replace(jpegData:)` from the user's photo pick, or `.remove`). Without an image, the UI draws a clearly non-photographic placeholder.
+5. Weekly plan: `readWeek`, `generateWeek`, `replacePlanDay` and `deleteWeek` map to the planner domain. Shopping items carry `origin` (`.manual` or `.generated(PlanProvenance)`). Check generated items through `setShoppingItem`, using the provenance's plan ID and version.
 
 If no service is injected, the app falls back to `UnconfiguredRecipeBookService`, whose every call fails visibly. `PreviewSupport.swift` is compiled only under `DEBUG` for Xcode previews. It is not a demo mode.
 
@@ -27,14 +29,18 @@ If no service is injected, the app falls back to `UnconfiguredRecipeBookService`
 - The last owner of a shared book who leaves or deletes their account must choose a new owner or delete the book. Nobody is promoted automatically.
 - Quantities are decimal strings, and `nil` means unknown. Imported amounts marked `amountNeedsReview` block saving until the user sets an amount or taps **Keep Unspecified**.
 - Import review never preselects a destination book.
-- Suggestions come only from saved recipes the user can access.
+- Suggestions come only from saved recipes the user can access. `suggestions()` stays in the contract, but the redesigned UI doesn't show it.
+- Weekly plan: the user picks a book and a rule (whole week, weekdays and weekend, or specific days), each with an explicit meal type (simple, more involved or full meal). Every rule expands to seven styles, Monday first. Meal types are only what the user labelled; the UI never infers them. Replacing a day offers other recipes from the same book, labelled matches first, and sends the replacement recipe's own servings (`nil` only when its yield is unknown).
+- Shopping shows "Automatic · from your meal plan" items in their own section, separate from "Added by you". Generated rows can be checked but not deleted; they change when the plan changes.
+- Recipe editor: add, delete and reorder steps (drag, plus Move Up and Move Down in the context menu and as VoiceOver actions), choose or remove a cover photo, and set the meal type.
+- Imported recipes show "Watch on Instagram", which opens the validated canonical `https://www.instagram.com/reel/<id>/` link with the system `openURL`.
 - Shopping lists are personal. "Have" checkboxes exclude ingredients the user already has before adding them to a list.
 
 ## Guest mode (continue without signing in)
 
 - **Entering guest mode:** sign-in, awaiting-access and profile-setup screens offer "Continue without signing in" or "Continue on this iPhone". These call `continueWithoutSignIn()`, which returns `SessionState.guest`. The UI never falls back to guest mode on an auth error.
-- **What guests can use:** the Library, recipes, editor, Cook suggestions and Shopping, all using the app's real on-device store. An "On this iPhone" banner says the data is saved only on this device.
-- **Sign-in prompts:** sharing (creating a shared book, or Share… on an on-device book), the Imports tab, incoming Reels and the Account tab all show a contextual Google sign-in prompt. A guest service throws `RecipeBookUIError.signInRequired(_:)` for any cloud-only call.
+- **What guests can use:** the Library, recipes, editor, weekly Plan and Shopping, all using the app's real on-device store. An "On this iPhone" banner says the data is saved only on this device.
+- **Sign-in prompts:** sharing (creating a shared book, or Share… on an on-device book), Paste Instagram Link, incoming Reels and the Account tab all show a contextual Google sign-in prompt. A guest service throws `RecipeBookUIError.signInRequired(_:)` for any cloud-only call.
 - **After sign-in:** books whose `BookSummary.storage == .onDevice` stay on the device and appear on an "On This iPhone" shelf. Share… on such a book opens an explicit consent sheet. Only after the user confirms does it call `copyLocalBookToAccount(id:kind:)`, which uploads a copy and keeps the original. Nothing is migrated automatically.
 - **Signing out from guest mode:** `signOut()` returns to the sign-in screen, and the on-device data is kept.
 - **Compatibility:** `continueWithoutSignIn()` and `copyLocalBookToAccount(id:kind:)` are protocol requirements with default implementations that throw. Existing adapters keep compiling, but guest mode doesn't work until the app layer implements them.
@@ -66,7 +72,8 @@ Availability: the deployment target stays at iOS 17. Newer APIs sit behind avail
 
 ## Validation status
 
-- **Simulator fixture showcase (DEBUG + Simulator only):** `FixtureShowcaseView(screen:)` shows the real screens over the preview fixtures, with a "Fixture preview — no live backend or Google sign-in" banner. Pick the screen with `FixtureShowcaseScreen.fromLaunchArguments()`, which reads `-RecipeBookFixtureShowcase sign-in|library|recipe-detail|shopping`. In this mode sign-in and import actions fail visibly. The showcase is compiled out of release and device builds.
+- **Simulator fixture showcase (DEBUG + Simulator only):** `FixtureShowcaseView(screen:)` shows the real screens over the preview fixtures, with a "Fixture preview — no live backend or Google sign-in" banner. Pick the screen with `FixtureShowcaseScreen.fromLaunchArguments()`, which reads `-RecipeBookFixtureShowcase sign-in|library|recipe-detail|shopping|plan`. In this mode sign-in and import actions fail visibly. The showcase is compiled out of release and device builds.
 
 - Foundation's hosted macOS CI run 43752216145 built UI checkpoint 0f102aa (integrated as 0b067b5) with Xcode 26.6 / iOS SDK 26.5. In that run, the 15 presentation tests passed and an unconfigured-launch Simulator smoke test ran. No toolchain is available in the Windows authoring environment.
+- The redesign (Plan tab, inline import flow, covers, generated shopping, step reordering) has **not been compiled yet**; its new presentation tests have not run.
 - The iOS 27-only paths (`#if compiler(>=6.4)`) have **not been compiled yet**. No iPhone visual, VoiceOver or iOS 27 runtime review has been done. These remain open gates.

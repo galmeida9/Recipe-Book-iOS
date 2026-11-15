@@ -64,6 +64,23 @@ public protocol RecipeBookService: Sendable {
     /// Adds only the selected (needed) ingredients of a recipe.
     func addRecipeIngredients(recipeID: RecipeID, ingredientIDs: [String], to listID: ShoppingListID) async throws -> ShoppingList
 
+    // MARK: Images
+    /// Bytes for a stored image (JPEG/PNG/HEIC). Default throws.
+    func imageData(_ image: ImageRef) async throws -> Data
+
+    // MARK: Weekly plan (per book; Monday-based weeks; shopping reconciled by the domain)
+    /// `nil` when no plan exists for that book and week yet.
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> WeeklyPlan?
+    /// `dayStyles` has exactly seven entries, Monday first; `nil` = don't plan that day.
+    /// Generated ingredients are reconciled into `listID` by the domain.
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [MealStyle?], listID: ShoppingListID,
+                      expectedVersion: Int?) async throws -> WeeklyPlan
+    /// Replaces (or with `nil`, clears) one day. Throws a user-readable error on version conflict.
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
+                        planVersion: Int) async throws -> WeeklyPlan
+    /// Deletes the week's plan; its generated shopping items are removed by reconciliation.
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws
+
     // MARK: Account
     /// Shared books where the user is the last owner and other members remain.
     func accountDeletionBlockers() async throws -> [BookDetail]
@@ -80,6 +97,18 @@ public extension RecipeBookService {
     /// recipes into a new book of `kind` in the signed-in account (`.shared` when the user is sharing it).
     /// The on-device book is kept and never auto-migrated.
     func copyLocalBookToAccount(id: BookID, kind: BookKind) async throws -> BookSummary { throw RecipeBookUIError.serviceNotConfigured }
+}
+
+/// Images and weekly planning. Default implementations throw until the app layer maps the real
+/// image store and planner domain; there is no local fake.
+public extension RecipeBookService {
+    func imageData(_ image: ImageRef) async throws -> Data { throw RecipeBookUIError.serviceNotConfigured }
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> WeeklyPlan? { throw RecipeBookUIError.serviceNotConfigured }
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [MealStyle?], listID: ShoppingListID,
+                      expectedVersion: Int?) async throws -> WeeklyPlan { throw RecipeBookUIError.serviceNotConfigured }
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
+                        planVersion: Int) async throws -> WeeklyPlan { throw RecipeBookUIError.serviceNotConfigured }
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws { throw RecipeBookUIError.serviceNotConfigured }
 }
 
 public enum RecipeBookUIError: LocalizedError, Equatable, Sendable {

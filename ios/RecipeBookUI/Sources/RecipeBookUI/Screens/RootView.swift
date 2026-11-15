@@ -236,7 +236,7 @@ struct ProfileSetupView: View {
 
 @MainActor
 struct MainTabView: View {
-    enum AppTab: Hashable { case library, suggestions, imports, shopping, account }
+    enum AppTab: Hashable { case library, plan, shopping, account }
 
     /// `nil` when the user continued without signing in (on-device guest).
     let profile: UserProfile?
@@ -259,25 +259,11 @@ struct MainTabView: View {
                         // Keep the shared link: after sign-in the account tabs offer it for import.
                         GuestReelSheet(onChange: onChange) { incomingReel = nil }
                     } else {
-                        ReelImportConfirmView(url: url) { job in
-                            incomingReel = nil
-                            if job != nil { tab = .imports }
-                        }
+                        // Same inline progress/review flow as Add Recipe › Paste Instagram Link.
+                        ReelImportFlowView(start: .link(url), onClose: { incomingReel = nil })
                     }
                 }
             }
-    }
-
-    @ViewBuilder
-    private var importsTab: some View {
-        if profile == nil {
-            NavigationStack {
-                SignInPromptView(feature: .importing, onChange: onChange)
-                    .navigationTitle("Imports")
-            }
-        } else {
-            ImportsView()
-        }
     }
 
     @ViewBuilder
@@ -294,8 +280,7 @@ struct MainTabView: View {
         if #available(iOS 18, *) {
             TabView(selection: $tab) {
                 Tab("Library", systemImage: "books.vertical", value: AppTab.library) { LibraryView() }
-                Tab("Cook", systemImage: "frying.pan", value: AppTab.suggestions) { SuggestionsView() }
-                Tab("Imports", systemImage: "square.and.arrow.down", value: AppTab.imports) { importsTab }
+                Tab("Plan", systemImage: "calendar", value: AppTab.plan) { PlanView() }
                 Tab("Shopping", systemImage: "cart", value: AppTab.shopping) { ShoppingListsView() }
                 Tab("Account", systemImage: "person.crop.circle", value: AppTab.account) { accountTab }
             }
@@ -304,12 +289,9 @@ struct MainTabView: View {
                 LibraryView()
                     .tabItem { Label("Library", systemImage: "books.vertical") }
                     .tag(AppTab.library)
-                SuggestionsView()
-                    .tabItem { Label("Cook", systemImage: "frying.pan") }
-                    .tag(AppTab.suggestions)
-                importsTab
-                    .tabItem { Label("Imports", systemImage: "square.and.arrow.down") }
-                    .tag(AppTab.imports)
+                PlanView()
+                    .tabItem { Label("Plan", systemImage: "calendar") }
+                    .tag(AppTab.plan)
                 ShoppingListsView()
                     .tabItem { Label("Shopping", systemImage: "cart") }
                     .tag(AppTab.shopping)

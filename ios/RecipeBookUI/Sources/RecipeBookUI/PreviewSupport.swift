@@ -12,15 +12,18 @@ actor PreviewRecipeBookService: RecipeBookService {
     private var recipes: [RecipeID: RecipeDetail]
     private var jobs: [ImportJob]
     private var lists: [ShoppingList]
+    private var plans: [String: WeeklyPlan] = [:]
     /// Simulator showcase mode: sign-in and import actions fail instead of pretending to succeed.
     private let blocksExternalActions: Bool
 
     init(session: SessionState? = nil, blocksExternalActions: Bool = false) {
         self.blocksExternalActions = blocksExternalActions
+        self.session = session ?? .signedIn(UserProfile(id: "7d3f1c2a-0000-4000-8000-000000000001", displayName: "Maria"))
         let meMember = BookMember(id: me.id, displayName: me.displayName, role: .owner)
         let soup = RecipeDetail(
             summary: RecipeSummary(id: "r1", bookID: "b1", title: "Roasted Tomato Soup", authorID: me.id,
-                                   authorName: "Maria", totalMinutes: 50, servings: 4),
+                                   authorName: "Maria", totalMinutes: 50, servings: 4,
+                                   mealStyle: .simple, version: 1),
             ingredients: [
                 IngredientLine(id: "i1", name: "Tomatoes", quantity: "1", unit: "kg", preparation: "halved"),
                 IngredientLine(id: "i2", name: "Garlic", quantity: "4", unit: "clove"),
@@ -34,7 +37,8 @@ actor PreviewRecipeBookService: RecipeBookService {
             ])
         let cake = RecipeDetail(
             summary: RecipeSummary(id: "r2", bookID: "b1", title: "Lemon Yoghurt Cake", authorID: ana.id,
-                                   authorName: "Ana", totalMinutes: 70, servings: 8),
+                                   authorName: "Ana", totalMinutes: 70, servings: 8,
+                                   mealStyle: .complicated, version: 1),
             ingredients: [IngredientLine(id: "i5", name: "Flour", quantity: "250", unit: "g"),
                           IngredientLine(id: "i6", name: "Lemons", quantity: "2")],
             steps: [RecipeStep(id: "s4", text: "Mix, bake 45 minutes at 180 °C.")])
@@ -58,7 +62,26 @@ actor PreviewRecipeBookService: RecipeBookService {
             ShoppingItem(id: "si1", name: "Tomatoes", quantity: "1", unit: "kg", sourceRecipeTitle: "Roasted Tomato Soup"),
             ShoppingItem(id: "si2", name: "Bread", isBought: true),
         ])]
-        self.session = session ?? .signedIn(me)
+        // Preview-only plan for the current week so the Plan tab has something to show.
+        let week = PlanCalendar.weekStart(containing: Date())
+        let dates = PlanCalendar.days(of: week)
+        let plan = WeeklyPlan(id: "p1", bookID: "b1", weekStart: week, days: dates.enumerated().map { index, date -> PlanDay in
+            switch index {
+            case 0: return PlanDay(date: date, mealStyle: .simple,
+                                   slot: PlanSlot(id: "ps1", recipeID: "r1", recipeVersion: 1, servings: 4, recipe: nil))
+            case 2: return PlanDay(date: date, mealStyle: .complicated,
+                                   slot: PlanSlot(id: "ps2", recipeID: "r2", recipeVersion: 1, servings: nil, recipe: nil))
+            case 5: return PlanDay(date: date, mealStyle: .full, slot: nil)
+            default: return PlanDay(date: date, mealStyle: nil, slot: nil)
+            }
+        }, version: 1, warnings: ["Preview: no recipe in this book is labelled “Full meal”."], shoppingListID: "l1")
+        plans["b1|\(week)"] = plan
+        let provenance = PlanProvenance(planID: "p1", bookID: "b1", weekStart: week, planVersion: 1,
+                                        recipeTitles: ["Roasted Tomato Soup", "Lemon Yoghurt Cake"])
+        lists[0].items += [
+            ShoppingItem(id: "g1", name: "Tomatoes", quantity: "1", unit: "kg", origin: .generated(provenance)),
+            ShoppingItem(id: "g2", name: "Flour", quantity: "250", unit: "g", origin: .generated(provenance)),
+        ]
     }
 
     private struct NotFound: LocalizedError { var errorDescription: String? { "Not found (preview)." } }
@@ -146,7 +169,9 @@ actor PreviewRecipeBookService: RecipeBookService {
         let previous = recipes[id]?.summary
         let summary = RecipeSummary(id: id, bookID: bookID, title: draft.title,
                                     authorID: previous?.authorID ?? me.id, authorName: previous?.authorName ?? me.displayName,
-                                    totalMinutes: draft.totalMinutes, servings: draft.servings)
+                                    totalMinutes: draft.totalMinutes, servings: draft.servings,
+                                    mealStyle: draft.mealStyle, coverImage: previous?.coverImage,
+                                    version: (previous?.version ?? 0) + 1)
         let detail = RecipeDetail(summary: summary, ingredients: draft.ingredients, steps: draft.steps, sourceURL: draft.sourceURL)
         recipes[id] = detail
         _ = try updateBook(bookID) { book in
@@ -242,6 +267,54 @@ actor PreviewRecipeBookService: RecipeBookService {
         }
     }
 
+    func imageData(_ image: ImageRef) async throws -> Data { throw NotFound() }
+
+    private func hydrated(_ plan: WeeklyPlan) -> WeeklyPlan {
+        var copy = plan
+        for i in copy.days.indices {
+            if let recipeID = copy.days[i].slot?.recipeID { copy.days[i].slot?.recipe = recipes[recipeID]?.summary }
+        }
+        return copy
+    }
+
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> WeeklyPlan? {
+        plans["\(bookID)|\(weekStart)"].map(hydrated)
+    }
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [MealStyle?], listID: ShoppingListID,
+                      expectedVersion: Int?) async throws -> WeeklyPlan {
+        try requireLive("Meal planning")
+        // Xcode-preview stand-in only; the planner domain owns real generation and shopping.
+        let pool = bookList.first { $0.id == bookID }?.recipes ?? []
+        let days = zip(PlanCalendar.days(of: weekStart), dayStyles).map { date, style -> PlanDay in
+            let match = style.flatMap { s in pool.first { $0.mealStyle == s } }
+            return PlanDay(date: date, mealStyle: style, slot: match.map {
+                PlanSlot(id: UUID().uuidString, recipeID: $0.id, recipeVersion: $0.version ?? 1, servings: $0.servings, recipe: nil)
+            })
+        }
+        let key = "\(bookID)|\(weekStart)"
+        let plan = WeeklyPlan(id: plans[key]?.id ?? UUID().uuidString, bookID: bookID, weekStart: weekStart, days: days,
+                              version: (plans[key]?.version ?? 0) + 1, shoppingListID: listID)
+        plans[key] = plan
+        return hydrated(plan)
+    }
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
+                        planVersion: Int) async throws -> WeeklyPlan {
+        try requireLive("Meal planning")
+        let key = "\(bookID)|\(weekStart)"
+        guard var plan = plans[key], let i = plan.days.firstIndex(where: { $0.date == date }) else { throw NotFound() }
+        plan.days[i].slot = replacement.map {
+            PlanSlot(id: UUID().uuidString, recipeID: $0.recipeID, recipeVersion: $0.recipeVersion ?? 1,
+                     servings: $0.servings, recipe: nil)
+        }
+        plan.version += 1
+        plans[key] = plan
+        return hydrated(plan)
+    }
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws {
+        try requireLive("Meal planning")
+        plans["\(bookID)|\(weekStart)"] = nil
+    }
+
     func accountDeletionBlockers() async throws -> [BookDetail] {
         bookList.filter { book in
             if case .lastOwnerMustTransferOrDelete = BookPermissions(book: book).leaveRequirement { return true }
@@ -272,7 +345,11 @@ actor PreviewRecipeBookService: RecipeBookService {
 }
 
 #Preview("Import review") {
-    NavigationStack { ImportReviewView(jobID: "j1") {} }
+    ReelImportFlowView(start: .job("j1"), service: PreviewRecipeBookService())
+}
+
+#Preview("Plan") {
+    PlanView()
         .environment(\.recipeBookService, PreviewRecipeBookService())
 }
 

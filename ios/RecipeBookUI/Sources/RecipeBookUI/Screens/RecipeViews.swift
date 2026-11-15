@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import PhotosUI
 import RecipeBookPresentation
 
 @MainActor
@@ -33,18 +34,16 @@ struct RecipeDetailView: View {
         let recipe = loaded.recipe
         let permissions = BookPermissions(book: loaded.book)
         return ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                header(recipe, book: loaded.book)
-                ingredients(recipe)
-                steps(recipe)
-                if let source = recipe.sourceURL {
-                    Link(destination: source) {
-                        Label("View original", systemImage: "arrow.up.right.square")
-                    }
-                    .font(.subheadline)
+            VStack(alignment: .leading, spacing: 0) {
+                hero(recipe)
+                VStack(alignment: .leading, spacing: 28) {
+                    header(recipe, book: loaded.book)
+                    sourceCard(recipe)
+                    ingredients(recipe)
+                    steps(recipe)
                 }
+                .padding(20)
             }
-            .padding(20)
             .frame(maxWidth: 700, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
@@ -92,6 +91,53 @@ struct RecipeDetailView: View {
         .disabled(runner.isRunning)
     }
 
+    /// Real cover photo when there is one; otherwise a slim illustrative band, never a fake photo.
+    @ViewBuilder
+    private func hero(_ recipe: RecipeDetail) -> some View {
+        if recipe.summary.coverImage != nil {
+            CoverImage(image: recipe.summary.coverImage, seed: recipe.id,
+                       symbol: recipe.summary.mealStyle?.systemImage ?? "fork.knife")
+                .frame(height: 280)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+        } else {
+            CoverPlaceholder(seed: recipe.id, symbol: recipe.summary.mealStyle?.systemImage ?? "fork.knife")
+                .frame(height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// Imported recipes link back to the original Reel so it can be watched on Instagram.
+    @ViewBuilder
+    private func sourceCard(_ recipe: RecipeDetail) -> some View {
+        if let watch = ReelLink.watchURL(for: recipe.sourceURL) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Imported from an Instagram Reel", systemImage: "film")
+                    .font(.subheadline.weight(.semibold))
+                Text(watch.absoluteString)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                WatchOnInstagramButton(url: watch)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        } else if let source = recipe.sourceURL, source.scheme?.lowercased() == "https" {
+            Link(destination: source) {
+                Label("View original", systemImage: "arrow.up.right.square")
+            }
+            .font(.subheadline)
+        }
+    }
+
     private func header(_ recipe: RecipeDetail, book: BookDetail) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(book.summary.name.uppercased())
@@ -110,6 +156,9 @@ struct RecipeDetailView: View {
 
     @ViewBuilder
     private func metadata(_ recipe: RecipeDetail, shared: Bool) -> some View {
+        if let style = recipe.summary.mealStyle {
+            MealStyleBadge(style: style)
+        }
         if let minutes = recipe.summary.totalMinutes {
             MetaLabel(text: formattedMinutes(minutes), systemImage: "clock")
         }
@@ -368,6 +417,10 @@ struct RecipeEditorView: View {
     @State private var issues: [DraftIssue] = []
     @State private var confirmDiscard = false
     @State private var runner = ActionRunner()
+    @State private var photoItem: PhotosPickerItem?
+    @State private var pickedPreview: UIImage?
+    @State private var processingPhoto = false
+    @State private var photoError: String?
 
     init(title: String, draft: RecipeDraft, destinationBooks: [BookSummary]?, saveLabel: String,
          showsCancel: Bool = true,
@@ -413,9 +466,27 @@ struct RecipeEditorView: View {
                 SourceEvidenceSection(text: evidence)
             }
 
+            coverSection
+
+            if let watch = ReelLink.watchURL(for: draft.sourceURL) {
+                Section {
+                    WatchOnInstagramButton(url: watch, compact: true)
+                } header: {
+                    Text("Source")
+                } footer: {
+                    Text("The link to the original Reel is kept with this recipe.")
+                }
+            }
+
             Section("Recipe") {
                 TextField("Title", text: $draft.title, axis: .vertical)
                     .font(.system(.title3, design: .serif))
+                Picker("Meal type", selection: $draft.mealStyle) {
+                    Text("Not set").tag(MealStyle?.none)
+                    ForEach(MealStyle.allCases, id: \.self) { style in
+                        Label(style.title, systemImage: style.systemImage).tag(Optional(style))
+                    }
+                }
                 LabeledContent("Servings") {
                     TextField("Optional", value: $draft.servings, format: .number)
                         .keyboardType(.numberPad)
@@ -447,15 +518,29 @@ struct RecipeEditorView: View {
 
             Section {
                 ForEach($draft.steps) { $step in
-                    let number = (draft.steps.firstIndex { $0.id == step.id } ?? 0) + 1
+                    let index = draft.steps.firstIndex { $0.id == step.id } ?? 0
+                    let number = index + 1
+                    let stepID = step.id
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text("\(number).")
-                            .font(.body.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                        Text("\(number)")
+                            .font(.callout.weight(.bold).monospacedDigit())
+                            .foregroundStyle(RecipeBookTheme.accent)
+                            .frame(minWidth: 22)
                             .accessibilityHidden(true)
                         TextField("Describe step \(number)", text: $step.text, axis: .vertical)
                             .accessibilityLabel("Step \(number)")
                     }
+                    .contextMenu {
+                        Button("Move Up", systemImage: "arrow.up") { moveStep(stepID, by: -1) }
+                            .disabled(index == 0)
+                        Button("Move Down", systemImage: "arrow.down") { moveStep(stepID, by: 1) }
+                            .disabled(index == draft.steps.count - 1)
+                        Button("Delete Step", systemImage: "trash", role: .destructive) {
+                            draft.steps.removeAll { $0.id == stepID }
+                        }
+                    }
+                    .accessibilityAction(named: "Move up") { moveStep(stepID, by: -1) }
+                    .accessibilityAction(named: "Move down") { moveStep(stepID, by: 1) }
                 }
                 .onDelete { draft.steps.remove(atOffsets: $0) }
                 .onMove { draft.steps.move(fromOffsets: $0, toOffset: $1) }
@@ -470,6 +555,8 @@ struct RecipeEditorView: View {
                     Spacer()
                     EditButton().font(.caption).textCase(nil)
                 }
+            } footer: {
+                Text("Tap Edit to drag steps into a new order, or touch and hold a step to move it up or down.")
             }
         }
         .navigationTitle(title)
@@ -495,7 +582,83 @@ struct RecipeEditorView: View {
             Button("Discard Changes", role: .destructive) { runner.cancel(); dismiss() }
         }
         .errorAlert($runner.errorMessage)
+        .errorAlert($photoError)
         .disabled(runner.isRunning)
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            loadPhoto(item)
+        }
+    }
+
+    private func moveStep(_ id: String, by offset: Int) {
+        withAnimation { draft.steps = StepOrdering.move(draft.steps, id: id, by: offset) }
+    }
+
+    @ViewBuilder
+    private var coverSection: some View {
+        let hasCover: Bool = {
+            switch draft.coverImageEdit {
+            case .replace: return true
+            case .remove: return false
+            case .unchanged: return draft.coverImage != nil
+            }
+        }()
+        Section {
+            ZStack {
+                if let pickedPreview, case .replace = draft.coverImageEdit {
+                    Image(uiImage: pickedPreview).resizable().scaledToFill()
+                } else if hasCover {
+                    CoverImage(image: draft.coverImage, seed: draft.title, symbol: draft.mealStyle?.systemImage ?? "fork.knife")
+                } else {
+                    CoverPlaceholder(seed: draft.title.isEmpty ? "new" : draft.title,
+                                     symbol: draft.mealStyle?.systemImage ?? "fork.knife")
+                    Label("No photo yet", systemImage: "photo")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(.black.opacity(0.35), in: Capsule())
+                }
+                if processingPhoto { ProgressView().tint(.white) }
+            }
+            .frame(height: 180)
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+            .accessibilityElement()
+            .accessibilityLabel(hasCover ? "Cover photo selected" : "No cover photo")
+
+            PhotosPicker(selection: $photoItem, matching: .images, photoLibrary: .shared()) {
+                Label(hasCover ? "Choose Another Photo" : "Choose Photo", systemImage: "photo.on.rectangle")
+            }
+            .disabled(processingPhoto)
+            if hasCover {
+                Button("Remove Photo", systemImage: "trash", role: .destructive) {
+                    photoItem = nil
+                    pickedPreview = nil
+                    draft.coverImageEdit = draft.coverImage == nil ? .unchanged : .remove
+                }
+            }
+        } header: {
+            Text("Cover photo")
+        }
+    }
+
+    private func loadPhoto(_ item: PhotosPickerItem) {
+        processingPhoto = true
+        Task {
+            defer { processingPhoto = false; photoItem = nil }
+            do {
+                guard let raw = try await item.loadTransferable(type: Data.self),
+                      let jpeg = await CoverPhotoEncoder.jpeg(from: raw) else {
+                    photoError = "That photo couldn’t be read. Try a different one."
+                    return
+                }
+                pickedPreview = UIImage(data: jpeg)
+                draft.coverImageEdit = .replace(jpegData: jpeg)
+            } catch {
+                photoError = error.localizedDescription
+            }
+        }
     }
 
     private func submit() {

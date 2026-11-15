@@ -12,11 +12,13 @@ struct LibraryView: View {
     @State private var reload = 0
     @State private var showingCreate = false
     @State private var pendingSignIn = false
+    @State private var unfinishedImports: [ImportJob] = []
+    @State private var resumingImport: ImportJob?
 
     var body: some View {
         NavigationStack {
             LoadingContent(state: state, retry: { reload += 1 }) { books in
-                if books.isEmpty {
+                if books.isEmpty && unfinishedImports.isEmpty {
                     VStack(spacing: 0) {
                         if accessMode == .guest { OnDeviceBanner().padding() }
                         ContentUnavailableView {
@@ -34,6 +36,7 @@ struct LibraryView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
                             if accessMode == .guest { OnDeviceBanner() }
+                            importsInProgress
                             let account = books.filter { $0.storage == .account }
                             let onDevice = books.filter { $0.storage == .onDevice }
                             shelf("Shared", account.filter { $0.kind == .shared })
@@ -61,8 +64,41 @@ struct LibraryView: View {
             }) {
                 CreateBookSheet(onCreated: { _ in reload += 1 }, onSignInNeeded: { pendingSignIn = true })
             }
+            .sheet(item: $resumingImport, onDismiss: { reload += 1 }) { job in
+                ReelImportFlowView(start: .job(job.id), onClose: { resumingImport = nil })
+            }
         }
         .task(id: reload) { await load() }
+    }
+
+    /// Unfinished Instagram imports (account only). The job lives on the server, so the user can
+    /// leave the import sheet at any time and pick it up here.
+    @ViewBuilder
+    private var importsInProgress: some View {
+        if !unfinishedImports.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Imports in progress")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                VStack(spacing: 0) {
+                    ForEach(unfinishedImports) { job in
+                        Button { resumingImport = job } label: {
+                            ImportJobRow(job: job)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens this import")
+                        if job.id != unfinishedImports.last?.id {
+                            Divider().padding(.leading, 66)
+                        }
+                    }
+                }
+                .background(Color(.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+        }
     }
 
     @ViewBuilder
@@ -96,52 +132,75 @@ struct LibraryView: View {
         } catch let error where !error.isCancellation {
             state = .failed(error.localizedDescription)
         } catch {}
+        guard accessMode == .account else { unfinishedImports = []; return }
+        // Secondary content: a failure here shouldn't block the library.
+        if let jobs = try? await service.importJobs() {
+            unfinishedImports = jobs.filter {
+                if case .completed = $0.status { return false }
+                return true
+            }
+        }
     }
 }
 
-/// A book drawn as a cover with a coloured spine.
+/// A book cover: real cover photo when one exists, otherwise an illustrative tinted cover.
 @MainActor
 struct BookCover: View {
     let book: BookSummary
 
     var body: some View {
-        let tint = RecipeBookTheme.tint(for: book.id)
-        HStack(spacing: 0) {
-            Rectangle().fill(tint).frame(width: 8)
-            VStack(alignment: .leading, spacing: 10) {
-                Image(systemName: book.kind == .shared ? "person.2.fill" : "book.closed.fill")
-                    .font(.title2)
-                    .foregroundStyle(tint)
-                    .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                CoverImage(image: book.coverImage, seed: book.id,
+                           symbol: book.kind == .shared ? "person.2.fill" : "book.closed.fill")
+                    .frame(height: 120)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                HStack(spacing: 6) {
+                    if book.kind == .shared {
+                        Label("Shared", systemImage: "person.2.fill")
+                    }
+                    if book.storage == .onDevice {
+                        Label("On this iPhone", systemImage: "iphone")
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(8)
+                .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
                 Text(book.name)
                     .font(.system(.headline, design: .serif))
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
-                    .lineLimit(3)
-                Spacer(minLength: 0)
-                VStack(alignment: .leading, spacing: 2) {
-                    if book.storage == .onDevice {
-                        Label("On this iPhone", systemImage: "iphone")
-                    }
-                    Text(book.recipeCount == 1 ? "1 recipe" : "\(book.recipeCount) recipes")
-                    if book.kind == .shared {
-                        Text(book.memberCount == 1 ? "1 member" : "\(book.memberCount) members")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-            .background(tint.opacity(0.10))
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.quaternary))
-        .contentShape(Rectangle())
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.quaternary))
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(book.name), \(book.kind == .shared ? "shared book" : "personal book")\(book.storage == .onDevice ? ", on this iPhone" : ""), \(book.recipeCount) recipes")
         .accessibilityHint(book.myRole == .owner && book.kind == .shared ? "You are an owner" : "")
+    }
+
+    private var subtitle: String {
+        var parts = [book.recipeCount == 1 ? "1 recipe" : "\(book.recipeCount) recipes"]
+        if book.kind == .shared {
+            parts.append(book.memberCount == 1 ? "1 member" : "\(book.memberCount) members")
+        }
+        if book.storage == .onDevice { parts.append("On this iPhone") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -233,6 +292,8 @@ struct BookView: View {
     @State private var reload = 0
     @State private var search = ""
     @State private var showingEditor = false
+    @State private var showingAddChoice = false
+    @State private var showingImport = false
     @State private var showingLeave = false
     @State private var confirmDeleteBook = false
     @State private var recipePendingDelete: RecipeSummary?
@@ -306,10 +367,11 @@ struct BookView: View {
                         Label("No recipes yet", systemImage: "fork.knife")
                     } description: {
                         Text(accessMode == .guest
-                             ? "Add one by hand. Sign in to import recipes from Instagram Reels."
-                             : "Add one by hand, or share a public Instagram Reel to Recipe Book.")
+                             ? "Write one yourself. Sign in to import recipes from Instagram Reels."
+                             : "Write one yourself, or paste an Instagram Reel link — sharing a Reel to Recipe Book works too.")
                     } actions: {
-                        Button("Add Recipe") { showingEditor = true }
+                        Button("Add Recipe") { showingAddChoice = true }
+                            .buttonStyle(.borderedProminent)
                     }
                 } else if recipes.isEmpty {
                     ContentUnavailableView.search(text: search)
@@ -332,9 +394,27 @@ struct BookView: View {
         .searchable(text: $search, prompt: "Search recipes")
         .refreshable { await load() }
         .adaptiveToolbar(
-            primary: [ToolbarAction("Add Recipe", systemImage: "plus") { showingEditor = true }],
+            primary: [ToolbarAction("Add Recipe", systemImage: "plus") { showingAddChoice = true }],
             secondary: bookMenuActions(book, permissions: permissions)
         )
+        .confirmationDialog("Add Recipe", isPresented: $showingAddChoice) {
+            Button("Write Recipe") { showingEditor = true }
+            Button("Paste Instagram Link") {
+                if accessMode == .guest {
+                    requestSignIn(.importing)
+                } else {
+                    showingImport = true
+                }
+            }
+        } message: {
+            Text("Write a recipe yourself, or import one from a public Instagram Reel.")
+        }
+        .sheet(isPresented: $showingImport, onDismiss: { reload += 1 }) {
+            // Imports land in account books; a book on this iPhone isn't preselected.
+            ReelImportFlowView(start: .paste,
+                               preselectedBookID: book.summary.storage == .account ? book.id : nil,
+                               onClose: { showingImport = false })
+        }
         .sheet(isPresented: $showingEditor) {
             NavigationStack {
                 RecipeEditorView(title: "New Recipe", draft: RecipeDraft(bookID: book.id), destinationBooks: nil,
@@ -410,20 +490,28 @@ struct RecipeRow: View {
     let showAuthor: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(recipe.title)
-                .font(.system(.body, design: .serif).weight(.medium))
-            HStack(spacing: 12) {
-                if let minutes = recipe.totalMinutes {
-                    MetaLabel(text: formattedMinutes(minutes), systemImage: "clock")
+        HStack(spacing: 14) {
+            RecipeThumbnail(recipe: recipe, size: 60)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(recipe.title)
+                    .font(.system(.body, design: .serif).weight(.semibold))
+                    .lineLimit(2)
+                HStack(spacing: 10) {
+                    if let style = recipe.mealStyle {
+                        MealStyleBadge(style: style)
+                    }
+                    if let minutes = recipe.totalMinutes {
+                        MetaLabel(text: formattedMinutes(minutes), systemImage: "clock")
+                    }
                 }
+                .font(.caption)
                 if showAuthor {
                     MetaLabel(text: recipe.authorName, systemImage: "person")
+                        .font(.caption)
                 }
             }
-            .font(.caption)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
     }
 }
