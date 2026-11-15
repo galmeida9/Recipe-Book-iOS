@@ -46,5 +46,7 @@ Availability: the deployment target stays at iOS 17. Newer APIs sit behind avail
 
 ## Validation status
 
+- **Simulator fixture showcase (DEBUG + Simulator only):** `FixtureShowcaseView(screen:)` shows the real screens over the preview fixtures, with a "Fixture preview — no live backend or Google sign-in" banner. Pick the screen with `FixtureShowcaseScreen.fromLaunchArguments()`, which reads `-RecipeBookFixtureShowcase sign-in|library|recipe-detail|shopping`. In this mode sign-in and import actions fail visibly. The showcase is compiled out of release and device builds.
+
 - Foundation's hosted macOS CI run 43752216145 built UI checkpoint 0f102aa (integrated as 0b067b5) with Xcode 26.6 / iOS SDK 26.5. In that run, the 15 presentation tests passed and an unconfigured-launch Simulator smoke test ran. No toolchain is available in the Windows authoring environment.
 - The iOS 27-only paths (`#if compiler(>=6.4)`) have **not been compiled yet**. No iPhone visual, VoiceOver or iOS 27 runtime review has been done. These remain open gates.

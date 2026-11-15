@@ -12,8 +12,11 @@ actor PreviewRecipeBookService: RecipeBookService {
     private var recipes: [RecipeID: RecipeDetail]
     private var jobs: [ImportJob]
     private var lists: [ShoppingList]
+    /// Simulator showcase mode: sign-in and import actions fail instead of pretending to succeed.
+    private let blocksExternalActions: Bool
 
-    init(session: SessionState? = nil) {
+    init(session: SessionState? = nil, blocksExternalActions: Bool = false) {
+        self.blocksExternalActions = blocksExternalActions
         let meMember = BookMember(id: me.id, displayName: me.displayName, role: .owner)
         let soup = RecipeDetail(
             summary: RecipeSummary(id: "r1", bookID: "b1", title: "Roasted Tomato Soup", authorID: me.id,
@@ -59,6 +62,14 @@ actor PreviewRecipeBookService: RecipeBookService {
     }
 
     private struct NotFound: LocalizedError { var errorDescription: String? { "Not found (preview)." } }
+    private struct FixtureUnavailable: LocalizedError {
+        let action: String
+        var errorDescription: String? { "Fixture preview: \(action) isn’t available. No live backend or Google sign-in is connected." }
+    }
+
+    private func requireLive(_ action: String) throws {
+        if blocksExternalActions { throw FixtureUnavailable(action: action) }
+    }
 
     private func summary(of list: ShoppingList) -> ShoppingListSummary {
         ShoppingListSummary(id: list.id, name: list.name,
@@ -80,7 +91,11 @@ actor PreviewRecipeBookService: RecipeBookService {
     }
 
     func loadSession() async throws -> SessionState { session }
-    func signIn() async throws -> SessionState { session = .signedIn(me); return session }
+    func signIn() async throws -> SessionState {
+        try requireLive("Google sign-in")
+        session = .signedIn(me)
+        return session
+    }
     func completeSetup(displayName: String) async throws -> SessionState {
         session = .signedIn(UserProfile(id: me.id, displayName: displayName)); return session
     }
@@ -153,6 +168,7 @@ actor PreviewRecipeBookService: RecipeBookService {
         return job
     }
     func submitImport(url: URL) async throws -> ImportJob {
+        try requireLive("Reel import")
         let job = ImportJob(id: UUID().uuidString, sourceURL: url, status: .queued, createdAt: Date())
         jobs.insert(job, at: 0)
         return job
@@ -166,6 +182,7 @@ actor PreviewRecipeBookService: RecipeBookService {
         evidenceText: "Caption (preview fixture): crispy chickpeas!! 1 can chickpeas (400 g), a good shake of paprika, roast hot until crunchy.")
     }
     func approveImport(id: ImportJobID, draft: RecipeDraft) async throws -> RecipeDetail {
+        try requireLive("Saving an imported recipe")
         let saved = try await saveRecipe(draft)
         if let i = jobs.firstIndex(where: { $0.id == id }) {
             jobs[i].status = .completed(recipeID: saved.id, bookID: saved.summary.bookID)
@@ -173,6 +190,7 @@ actor PreviewRecipeBookService: RecipeBookService {
         return saved
     }
     func retryImport(id: ImportJobID) async throws -> ImportJob {
+        try requireLive("Retrying an import")
         guard let i = jobs.firstIndex(where: { $0.id == id }) else { throw NotFound() }
         jobs[i].status = .queued
         return jobs[i]
