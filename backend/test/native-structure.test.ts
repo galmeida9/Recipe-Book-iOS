@@ -29,7 +29,7 @@ test("checked-in Xcode artifact parses and explicitly embeds the native share ex
   project.parseSync();
   const objects = project.hash.project.objects;
   const targets = Object.values(objects).filter(value => value.isa === "PBXNativeTarget");
-  assert.equal(targets.length, 2);
+  assert.equal(targets.length, 3);
   const app = targets.find(target => target.name === "RecipeBook");
   const share = targets.find(target => target.name === "RecipeBookShare");
   assert.ok(app && share);

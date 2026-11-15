@@ -23,6 +23,11 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Discover installed Apple tooling and runtimes
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          xcrun simctl list devices available
       - name: Portable core tests
         run: swift test
       - name: Portable presentation tests
@@ -32,6 +37,13 @@ jobs:
           xcodebuild -version
           xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
           test -f build/Build/Products/Debug-iphoneos/RecipeBook.app/PlugIns/RecipeBookShare.appex/RecipeBookShare
+      - name: Discover an available iPhone Simulator
+        id: simulator
+        run: |
+          ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d,reverse=True) if "iOS" in k for x in d[k] if x.get("isAvailable") and x["name"].startswith("iPhone")))')
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+      - name: Run native Simulator launch smoke test
+        run: xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build CODE_SIGNING_ALLOWED=NO test
       - uses: actions/upload-artifact@v4
         if: inputs.upload_artifact
         with:

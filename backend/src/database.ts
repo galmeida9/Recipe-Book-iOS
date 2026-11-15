@@ -24,17 +24,25 @@ export function database(): Promise<sql.ConnectionPool> {
 }
 
 export async function serializable<T>(work: (transaction: sql.Transaction) => Promise<T>): Promise<T> {
-  const transaction = new sql.Transaction(await database());
-  await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
-  let aborted = false;
-  transaction.on("rollback", () => { aborted = true; });
-  try {
-    const result = await work(transaction);
-    await transaction.commit();
-    return result;
-  } catch (error) {
-    if (!aborted) await transaction.rollback();
-    throw error;
+  for (let attempt = 0; ; attempt++) {
+    const transaction = new sql.Transaction(await database());
+    await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    let aborted = false;
+    transaction.on("rollback", () => { aborted = true; });
+    try {
+      const result = await work(transaction);
+      await transaction.commit();
+      return result;
+    } catch (error) {
+      if (!aborted) await transaction.rollback();
+      // A deadlock victim is fully rolled back by SQL. Never retry a stale
+      // version, an unknown commit outcome, a charged POST or a generic error.
+      if (error instanceof Error && "number" in error && error.number === 1205 && attempt < 2) {
+        await new Promise(resolve => setTimeout(resolve, 25 * 2 ** attempt + Math.floor(Math.random() * 10)));
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

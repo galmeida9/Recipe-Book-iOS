@@ -18,7 +18,7 @@ CREATE TABLE dbo.AccessInvites (
     Subject nvarchar(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
     ExpiresAt datetime2 NOT NULL,
     Revoked bit NOT NULL DEFAULT 0,
-    PRIMARY KEY (Issuer, Subject)
+    PRIMARY KEY NONCLUSTERED (Issuer, Subject)
 );
 CREATE TABLE dbo.Books (
     Id uniqueidentifier NOT NULL PRIMARY KEY,
