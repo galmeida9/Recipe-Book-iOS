@@ -42,6 +42,10 @@ public actor APIClient {
     public func createBook(name: String, kind: BookKind) async throws -> Book {
         try await request("POST", "books", body: CreateBook(name: name, kind: kind))
     }
+    public func copyLocalBook<Payload: Encodable & Sendable>(payload: Payload, idempotencyKey: UUID, expectedAccountID: UUID) async throws -> Book {
+        try await request("POST", "local-book-copies", body: payload, idempotencyKey: idempotencyKey,
+                          expectedAccountID: expectedAccountID)
+    }
     public func deleteBook(_ book: Book) async throws -> SessionAccount {
         try await request("DELETE", "books/\(book.id)", version: book.version)
     }
@@ -118,7 +122,7 @@ public actor APIClient {
         try await request(method, path, body: Optional<EmptyBody>.none, version: version)
     }
 
-    private func request<T: Decodable, Body: Encodable>(_ method: String, _ path: String, body: Body?, version: Int? = nil, idempotencyKey: UUID? = nil) async throws -> T {
+    private func request<T: Decodable, Body: Encodable>(_ method: String, _ path: String, body: Body?, version: Int? = nil, idempotencyKey: UUID? = nil, expectedAccountID: UUID? = nil) async throws -> T {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = method
         request.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
@@ -129,6 +133,7 @@ public actor APIClient {
         }
         if let version { request.setValue(String(version), forHTTPHeaderField: "If-Match") }
         if let idempotencyKey { request.setValue(idempotencyKey.uuidString.lowercased(), forHTTPHeaderField: "Idempotency-Key") }
+        if let expectedAccountID { request.setValue(expectedAccountID.uuidString.lowercased(), forHTTPHeaderField: "X-Recipe-Account-ID") }
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw APIError(status: 0, code: "transport", message: "Invalid HTTP response.")

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type sql from "mssql";
 import { z } from "zod";
 import { assertVersion, invariant, draftSchema, ingredientSchema, shoppingItemSchema, idSchema,
@@ -14,6 +14,8 @@ interface ListRow { id: string; name: string; items: string; version: number }
 const nameSchema = z.string().trim().min(1).max(120);
 export const pendingAccountLimit = 100;
 export const createBookSchema = z.object({ name: nameSchema, kind: z.enum(["personal", "shared"]) }).strict();
+export const copyLocalBookSchema = z.object({ name: nameSchema, kind: z.enum(["personal", "shared"]),
+  recipes: z.array(draftSchema).max(500) }).strict();
 export const createListSchema = z.object({ name: nameSchema }).strict();
 export const replaceItemsSchema = z.object({ items: z.array(shoppingItemSchema).max(1000) }).strict()
   .refine(value => new Set(value.items.map(item => item.id)).size === value.items.length, "Item identifiers must be unique.");
@@ -70,6 +72,14 @@ async function getList(transaction: sql.Transaction, id: string, userId: string)
   invariant(rows[0], 404, "list_not_found", "Shopping list not found.");
   return { ...rows[0], id: rows[0].id.toLowerCase(), items: z.array(shoppingItemSchema).parse(JSON.parse(rows[0].items)) };
 }
+async function createStoredBook(transaction: sql.Transaction, userId: string, body: { name: string; kind: BookKind }): Promise<Book> {
+  const id = randomUUID();
+  const counts = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.Memberships WHERE UserId=@userId", { userId });
+  invariant(counts[0]!.count < 100, 409, "book_limit", "An account can belong to at most 100 books.");
+  await query(transaction, "INSERT dbo.Books(Id,Name,Kind) VALUES(@id,@name,@kind)", { id, ...body });
+  await query(transaction, "INSERT dbo.Memberships(BookId,UserId,Role) VALUES(@id,@userId,'owner')", { id, userId });
+  return { id, ...body, role: "owner", version: 1 };
+}
 export class RecipeBookService {
   constructor(private readonly principal: Principal) {}
   async execute<T>(work: (transaction: sql.Transaction, userId: string) => Promise<T>): Promise<T> {
@@ -118,14 +128,29 @@ export class RecipeBookService {
   }
   createBook(input: unknown) {
     const body = createBookSchema.parse(input);
+    return this.execute((transaction, userId) => createStoredBook(transaction, userId, body));
+  }
+  copyLocalBook(input: unknown, requestKey: string, expectedAccountId: string) {
+    const body = copyLocalBookSchema.parse(input);
+    const key = idSchema.parse(requestKey);
+    const snapshotHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
     return this.execute(async (transaction, userId): Promise<Book> => {
-      const id = randomUUID();
-      const counts = await query<{ count: number }>(transaction,
-        "SELECT COUNT(*) AS count FROM dbo.Memberships WHERE UserId=@userId", { userId });
-      invariant(counts[0]!.count < 100, 409, "book_limit", "An account can belong to at most 100 books.");
-      await query(transaction, "INSERT dbo.Books(Id,Name,Kind) VALUES(@id,@name,@kind)", { id, ...body });
-      await query(transaction, "INSERT dbo.Memberships(BookId,UserId,Role) VALUES(@id,@userId,'owner')", { id, userId });
-      return { id, ...body, role: "owner", version: 1 };
+      invariant(userId === idSchema.parse(expectedAccountId), 409, "account_changed", "Sign-in changed before copying. Return to the intended account and retry.");
+      const previous = await query<{ bookId: string; hash: string }>(transaction,
+        `SELECT CONVERT(varchar(36),BookId) AS bookId,SnapshotHash AS hash FROM dbo.LocalBookCopies WITH(UPDLOCK,HOLDLOCK)
+          WHERE UserId=@userId AND RequestKey=@key`, { userId, key });
+      if (previous[0]) {
+        invariant(previous[0].hash === snapshotHash, 409, "idempotency_conflict", "This copy request belongs to a different local snapshot.");
+        return bookAccess(transaction, previous[0].bookId.toLowerCase(), userId);
+      }
+      const book = await createStoredBook(transaction, userId, { name: body.name, kind: body.kind });
+      for (const draft of body.recipes) {
+        await query(transaction, "INSERT dbo.Recipes(Id,BookId,AuthorId,Draft) VALUES(@id,@bookId,@userId,@draft)",
+          { id: randomUUID(), bookId: book.id, userId, draft: JSON.stringify(draft) });
+      }
+      await query(transaction, "INSERT dbo.LocalBookCopies(UserId,RequestKey,SnapshotHash,BookId) VALUES(@userId,@key,@hash,@bookId)",
+        { userId, key, hash: snapshotHash, bookId: book.id });
+      return book;
     });
   }
   deleteBook(bookId: string, version: number) {

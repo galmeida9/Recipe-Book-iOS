@@ -67,6 +67,25 @@ jobs:
           test -f "$APP/Assets.car"
           test -d "$APP/RecipeBookUI_RecipeBookUI.bundle"
           test "$(plutil -extract RecipeBookInstallationCheck raw -o - "$APP/Info.plist")" = "$CHECK"
+          python3 <<'PY'
+          import pathlib, plistlib
+          for target in ("RecipeBook", "RecipeBookShare"):
+              data = plistlib.loads(pathlib.Path("ios", target, target + ".entitlements").read_bytes())
+              data["com.apple.security.application-groups"] = ["group.com.recipebook.shared"]
+              pathlib.Path(target + "-requested.plist").write_bytes(plistlib.dumps(data))
+          PY
+          # Requested metadata only. SideStore still supplies the actual team/profiles.
+          codesign --force --sign - --entitlements RecipeBookShare-requested.plist "$APP/PlugIns/RecipeBookShare.appex"
+          codesign --force --sign - --entitlements RecipeBook-requested.plist "$APP"
+          codesign --display --entitlements - "$APP" > app-entitlements.plist
+          codesign --display --entitlements - "$APP/PlugIns/RecipeBookShare.appex" > share-entitlements.plist
+          python3 <<'PY'
+          import plistlib, pathlib
+          for name in ("app-entitlements.plist", "share-entitlements.plist"):
+              value = plistlib.loads(pathlib.Path(name).read_bytes())
+              assert value["com.apple.security.application-groups"] == ["group.com.recipebook.shared"]
+          print("Both ad-hoc signatures retain matching requested App Group metadata; no device authorization is claimed.")
+          PY
           if find "$APP" \( -name embedded.mobileprovision -o -name '*.p12' -o -name '*.p8' \) | grep -q .; then exit 1; fi
           mkdir -p installation-payload/Payload
           ditto "$APP" installation-payload/Payload/RecipeBook.app

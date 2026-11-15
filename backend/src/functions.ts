@@ -32,6 +32,9 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
     if (method === "GET") result = await service.me();
     else if (method === "DELETE") result = await service.deleteAccount();
     else if (method === "PATCH") result = await service.completeSetup(await body(request));
+  } else if (path.length === 1 && path[0] === "local-book-copies" && method === "POST") {
+    result = await service.copyLocalBook(await body(request), idSchema.parse(request.headers.get("idempotency-key")),
+      idSchema.parse(request.headers.get("x-recipe-account-id")));
   } else if (path[0] === "books") {
     if (path.length === 1) {
       if (method === "GET") result = await service.books();
