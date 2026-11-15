@@ -86,12 +86,9 @@ struct SignInView: View {
             .frame(maxWidth: .infinity)
         }
         .bottomControlBar {
-            // Text-only label: no Google logo asset is bundled in this module.
-            RunningButton(title: "Continue with Google", isRunning: runner.isRunning) {
+            GoogleSignInButton(isRunning: runner.isRunning) {
                 runner.run { onChange(try await service.signIn()) }
             }
-            .floatingPrimaryButtonStyle()
-            .controlSize(.large)
         }
         .errorAlert($runner.errorMessage)
     }

@@ -44,6 +44,17 @@ Availability: the deployment target stays at iOS 17. Newer APIs sit behind avail
 - iOS 18 and iOS 26 APIs: `if #available(...)`.
 - iOS 27 APIs (`visibilityPriority`, `ToolbarOverflowMenu`): additionally wrapped in `#if compiler(>=6.4)`, because they need Xcode 27 / Swift 6.4.
 
+## Brand assets
+
+- **App icon:** `AppIcon/Assets.xcassets` holds an original, opaque 1024×1024 single-size `AppIcon`, supported from Xcode 14 and iOS 17. It shows a cream recipe book with a herb ribbon and leaf on a terracotta gradient. It's outside `Sources`, so SwiftPM ignores it. The app target adds this catalog and sets `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon`.
+- **Google sign-in button:** `GoogleSignInButton` follows Google's [Sign in with Google branding guidelines](https://developers.google.com/identity/branding-guidelines):
+  - It uses the light theme in Light Mode and the dark theme in Dark Mode, with the specified fill, stroke and text colours.
+  - It's a pill with iOS padding of 16, 12 and 16 points.
+  - It shows a fixed 20 pt standard-colour "G".
+  - `Resources/GoogleG-{light,dark}[@2x,@3x].png` are pixel-exact 20 pt crops of Google's official iOS "Show text=No, Shape=Square" assets from `signin-assets.zip`. They aren't redrawn, recoloured or resampled.
+  - Deviation: the label uses the system font, not Google Sans Medium, which isn't bundled. That lets it scale with Dynamic Type.
+  - The Google "G" is Google's trademark, used only as the guidelines allow.
+
 ## Validation status
 
 - **Simulator fixture showcase (DEBUG + Simulator only):** `FixtureShowcaseView(screen:)` shows the real screens over the preview fixtures, with a "Fixture preview — no live backend or Google sign-in" banner. Pick the screen with `FixtureShowcaseScreen.fromLaunchArguments()`, which reads `-RecipeBookFixtureShowcase sign-in|library|recipe-detail|shopping`. In this mode sign-in and import actions fail visibly. The showcase is compiled out of release and device builds.

@@ -13,7 +13,8 @@ let package = Package(
         // Foundation-only presentation values, the UI service contract and portable UI rules.
         .target(name: "RecipeBookPresentation"),
         // SwiftUI screens. Depends only on the presentation contract.
-        .target(name: "RecipeBookUI", dependencies: ["RecipeBookPresentation"]),
+        // Resources: official Google "G" crops for the Sign in with Google button (see README).
+        .target(name: "RecipeBookUI", dependencies: ["RecipeBookPresentation"], resources: [.process("Resources")]),
         .testTarget(name: "RecipeBookPresentationTests", dependencies: ["RecipeBookPresentation"]),
     ]
 )
