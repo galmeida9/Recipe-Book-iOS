@@ -13,9 +13,17 @@ final class PreviewCaptureTests: XCTestCase {
             let app = XCUIApplication()
             app.launchArguments = ["-RecipeBookFixtureShowcase", screen]
             app.launch()
-            XCTAssertTrue(app.staticTexts["Fixture preview — no live backend or Google sign-in"].waitForExistence(timeout: 15))
+            guard app.staticTexts["Fixture preview — no live backend or Google sign-in"].waitForExistence(timeout: 15) else {
+                XCTFail("Fixture disclosure missing for \(screen): " + String(app.debugDescription.prefix(4_000)))
+                app.terminate()
+                return
+            }
             let title = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", expected)).firstMatch
-            XCTAssertTrue(title.waitForExistence(timeout: 15), "The implemented \(screen) screen did not load.")
+            guard title.waitForExistence(timeout: 15) else {
+                XCTFail("The implemented \(screen) screen did not load: " + String(app.debugDescription.prefix(4_000)))
+                app.terminate()
+                return
+            }
             if screen == "recipe-detail" || screen == "shopping" {
                 XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Tomatoes")).firstMatch.waitForExistence(timeout: 15))
             }

@@ -17,6 +17,7 @@ interface ProjectNode {
   dstSubfolderSpec?: string;
   dependencies?: string[];
   files?: string[];
+  buildSettings?: Record<string, string>;
 }
 interface ParsedProject {
   parseSync(): void;
@@ -42,6 +43,10 @@ test("checked-in Xcode artifact parses and explicitly embeds the native share ex
   const packages = Object.values(objects).filter(value => value.isa === "XCSwiftPackageProductDependency");
   assert.ok(packages.some(value => value.productName === "RecipeBookAuth"));
   assert.ok(packages.some(value => value.productName === "RecipeBookUI"));
+  const debug = objects["AB0000000000000000000001"]!.buildSettings!;
+  const release = objects["AB0000000000000000000002"]!.buildSettings!;
+  assert.match(debug.SWIFT_ACTIVE_COMPILATION_CONDITIONS ?? "", /\bDEBUG\b/);
+  assert.doesNotMatch(release.SWIFT_ACTIVE_COMPILATION_CONDITIONS ?? "", /\bDEBUG\b/);
   const root = path.resolve(path.dirname(projectPath), "..");
   for (const file of ["RecipeBook/RecipeBookApp.swift", "RecipeBook/UIServiceAdapter.swift", "RecipeBook/AppConfiguration.swift", "RecipeBookShare/ShareViewController.swift", "RecipeBook/Info.plist", "RecipeBookShare/Info.plist", "RecipeBookUI/Package.swift"]) {
     assert.ok(existsSync(path.join(root, file)), `Missing project input ${file}`);
