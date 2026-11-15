@@ -3,8 +3,9 @@
 Native Swift/SwiftUI recipe books, bounded Instagram Reel imports and personal
 shopping lists, with an Azure Functions TypeScript API and Azure SQL.
 
-The foundation contains portable Swift DTOs/API contracts, official Google Sign-In
-with backend-audience ID tokens (no CIAM tenant or passwords),
+The foundation contains portable Swift DTOs/API contracts, AppAuth with one
+central Google Web OAuth broker and Google ID tokens (no per-friend clients,
+CIAM tenant or passwords),
 native share-inbox plumbing, a concrete app/extension Xcode project, SQL-backed
 authorization/CRUD, optimistic writes, import budget/idempotency/outbox handling,
 shopping arithmetic, infrastructure and focused tests. Product SwiftUI lives in

@@ -11,6 +11,7 @@ struct RecipeBookApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var incomingReel: URL?
     @State private var inboxError: String?
+    @State private var sharedInboxUnavailable = false
 
     init() {
         #if DEBUG
@@ -75,8 +76,11 @@ struct RecipeBookApp: App {
         } message: { Text(inboxError ?? "") }
     }
     private func loadInbox() {
-        guard incomingReel == nil else { return }
+        guard incomingReel == nil, !sharedInboxUnavailable else { return }
         do { incomingReel = try SharedReelInbox(appGroup: AppConfiguration.appGroup()).pending().first?.url }
-        catch { inboxError = error.localizedDescription }
+        catch {
+            if let failure = error as? APIError, failure.code == "app_group_unavailable" { sharedInboxUnavailable = true }
+            inboxError = error.localizedDescription
+        }
     }
 }

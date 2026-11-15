@@ -13,7 +13,7 @@ enum AppConfiguration {
         }
         let auth = try GoogleAuth(configuration: configuration)
         return try UIServiceAdapter(api: APIClient(baseURL: url("RecipeBookAPIURL"), tokens: auth), auth: auth,
-                                    inbox: SharedReelInbox(appGroup: appGroup()))
+                                    inbox: SharedReelInbox(appGroup: setting("RecipeBookAppGroup"), resolveGroup: { try SharedAppGroup.current() }))
     }
     private static func setting(_ key: String) throws -> String {
         guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,

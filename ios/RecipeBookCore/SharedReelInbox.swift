@@ -2,15 +2,18 @@ import Foundation
 
 public struct SharedReelInbox: Sendable {
     public let appGroup: String
+    private let resolveGroup: (@Sendable () throws -> String)?
     #if DEBUG
     private let testDirectory: URL?
     init(testDirectory: URL) {
         appGroup = "test-only"
+        resolveGroup = nil
         self.testDirectory = testDirectory
     }
     #endif
-    public init(appGroup: String) {
+    public init(appGroup: String, resolveGroup: (@Sendable () throws -> String)? = nil) {
         self.appGroup = appGroup
+        self.resolveGroup = resolveGroup
         #if DEBUG
         testDirectory = nil
         #endif
@@ -63,7 +66,8 @@ public struct SharedReelInbox: Sendable {
         }
         #endif
         #if os(iOS)
-        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else {
+        let identifier = try resolveGroup?() ?? appGroup
+        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) else {
             throw APIError(status: 0, code: "app_group_unavailable", message: "The shared app group is not provisioned.")
         }
         let directory = root.appendingPathComponent("ReelInbox", isDirectory: true)

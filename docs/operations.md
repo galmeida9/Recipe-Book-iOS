@@ -260,6 +260,24 @@ valid Linux module paths; use `ZipArchive.CreateEntry` with normalized names (or
 a supported POSIX packager), and verify `host.json`, `package.json` and
 `dist/functions.js` at their exact paths before deployment. A successful file
 upload is not proof that the Functions host indexed its handlers.
+Owned closed core provisioning is real: Node 24, maximum one 512-MiB on-demand
+instance per group, no always-ready instances and `APIFY_ENABLED=false` were
+read back. The SQL subnet rule is Ready and the workload user has only CONNECT
+plus dbo CRUD. A temporary administrative-only read probe executed on the
+actual Function and returned `principal=recipe-api-identity`,
+`sqlReadSucceeded=true`; it was disabled immediately afterward and operator
+access removed. A leading-dot SQL environment suffix originally caused a
+double-dot DNS name; source/live hostname are corrected. This is actual managed-
+identity/network SQL proof, not customer Google login or native callback proof.
+Central Web broker checkpoint `34f6ffe` passed hosted AppAuth compilation and
+the expanded eighteen-test real SQL suite, including nonce/PKCE/code-expiry/
+single-use races. Owner Web client/vault-secret configuration and physical
+callback/account checks are still required before opening the core trial.
+App Group resolution is deferred until inbox I/O, with an explicit once-per-
+launch error if unavailable. No different container is substituted. Shared
+recipe books use backend memberships and are independent of the native Reel
+share inbox, so an unprovisioned share container does not fabricate or block
+core Google/books/shopping service construction.
 
 ## Account access and ownership
 

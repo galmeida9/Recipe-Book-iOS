@@ -157,7 +157,7 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
         { name: 'ImportQueue__clientId', value: identity.properties.clientId }
         { name: 'QUEUE_SERVICE_URL', value: storage.properties.primaryEndpoints.queue }
         { name: 'BLOB_SERVICE_URL', value: storage.properties.primaryEndpoints.blob }
-        { name: 'SQL_SERVER', value: '${resolvedSqlServerName}.${environment().suffixes.sqlServerHostname}' }
+        { name: 'SQL_SERVER', value: '${resolvedSqlServerName}${environment().suffixes.sqlServerHostname}' }
         { name: 'SQL_DATABASE', value: 'RecipeBook' }
         { name: 'GOOGLE_SERVER_CLIENT_ID', value: googleServerClientId }
         { name: 'GOOGLE_OAUTH_CLIENT_SECRET', value: '@Microsoft.KeyVault(VaultName=${vaultName};SecretName=google-oauth-client-secret)' }
