@@ -11,6 +11,14 @@ on:
         required: true
         type: boolean
         default: false
+      package_mode:
+        required: false
+        type: string
+        default: installation-check
+      api_url:
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -23,13 +31,15 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
+      PACKAGE_MODE: ${{ inputs.package_mode }}
+      TRIAL_API_URL: ${{ inputs.api_url }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify existing private draft and exact source before building
         run: |
           [[ "$DRAFT_RELEASE_ID" =~ ^[0-9]+$ ]] || exit 1
           gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft.json
-          node -e 'const r=require("./draft.json"); if(!r.draft || r.published_at || r.assets.length || r.target_commitish!==process.env.GITHUB_SHA || r.tag_name!=="installation-check-"+process.env.GITHUB_SHA.slice(0,12)) throw Error("Draft/source/empty-asset guard failed");'
+          node -e 'const r=require("./draft.json"),m=process.env.PACKAGE_MODE;if(!["installation-check","core-trial"].includes(m)||!r.draft||r.published_at||r.assets.length||r.target_commitish!==process.env.GITHUB_SHA||r.tag_name!==m+"-"+process.env.GITHUB_SHA.slice(0,12))throw Error("Draft/source/mode guard failed");if(m==="core-trial"&&process.env.TRIAL_API_URL!=="https://recipe-api-nb2yqx3agzmou.azurewebsites.net/api/")throw Error("Only the verified owned API is allowed");'
       - name: Select newest installed Xcode without downloading SDKs
         run: |
           python3 <<'PY'
@@ -48,21 +58,25 @@ jobs:
       - name: Build unsigned installation diagnostic with intact extension
         run: |
           xcodebuild -version
-          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO RECIPEBOOK_INSTALLATION_CHECK=YES build
+          CHECK=YES
+          if [ "$PACKAGE_MODE" = core-trial ]; then CHECK=NO; fi
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO "RECIPEBOOK_INSTALLATION_CHECK=$CHECK" "RECIPEBOOK_API_URL=$TRIAL_API_URL" build
           APP=build/Build/Products/Debug-iphoneos/RecipeBook.app
           test -f "$APP/RecipeBook"
           test -f "$APP/PlugIns/RecipeBookShare.appex/RecipeBookShare"
-          test "$(plutil -extract RecipeBookInstallationCheck raw -o - "$APP/Info.plist")" = YES
+          test "$(plutil -extract RecipeBookInstallationCheck raw -o - "$APP/Info.plist")" = "$CHECK"
           if find "$APP" \( -name embedded.mobileprovision -o -name '*.p12' -o -name '*.p8' \) | grep -q .; then exit 1; fi
           mkdir -p installation-payload/Payload
           ditto "$APP" installation-payload/Payload/RecipeBook.app
-          (cd installation-payload && ditto -c -k --keepParent Payload ../RecipeBook-installation-check.ipa)
-          node -e 'const n=require("fs").statSync("RecipeBook-installation-check.ipa").size;if(n<=0||n>64*1024*1024)throw Error("IPA exceeds 64 MiB bound");console.log("Unsigned installation-check IPA bytes:",n);'
-          shasum -a 256 RecipeBook-installation-check.ipa > RecipeBook-installation-check.ipa.sha256
+          FILE="RecipeBook-$PACKAGE_MODE.ipa"
+          (cd installation-payload && ditto -c -k --keepParent Payload "../$FILE")
+          node -e 'const n=require("fs").statSync("RecipeBook-"+process.env.PACKAGE_MODE+".ipa").size;if(n<=0||n>64*1024*1024)throw Error("IPA exceeds 64 MiB bound");console.log("Unsigned IPA bytes:",n);'
+          shasum -a 256 "$FILE" > "$FILE.sha256"
       - name: Upload only the bounded unsigned diagnostic to the verified draft
         run: |
           gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft.json
           node -e 'const r=require("./draft.json");if(!r.draft||r.published_at||r.assets.length||r.target_commitish!==process.env.GITHUB_SHA)throw Error("Draft changed before upload");'
           TAG=$(node -p 'require("./draft.json").tag_name')
-          gh release upload "$TAG" RecipeBook-installation-check.ipa RecipeBook-installation-check.ipa.sha256 --repo "$GITHUB_REPOSITORY"
+          FILE="RecipeBook-$PACKAGE_MODE.ipa"
+          gh release upload "$TAG" "$FILE" "$FILE.sha256" --repo "$GITHUB_REPOSITORY"
           gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" --jq '{draft, published_at, html_url, assets: [.assets[] | {name,size,digest}]}'

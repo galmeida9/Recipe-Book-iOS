@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: ''
+      trial_api_url:
+        description: 'Configured owned HTTPS API URL for a core-trial package; empty keeps diagnostic mode'
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -101,3 +106,5 @@ jobs:
     with:
       licensed_host_approved: ${{ inputs.licensed_host_approved }}
       draft_release_id: ${{ inputs.installation_check_draft_id }}
+      package_mode: ${{ inputs.trial_api_url != '' && 'core-trial' || 'installation-check' }}
+      api_url: ${{ inputs.trial_api_url }}
