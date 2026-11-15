@@ -38,7 +38,7 @@ export const provenanceSchema = z.object({
   ingredientIndex: z.number().int().min(0).max(199), servings: z.number().int().min(1).max(1000).nullable()
 }).strict();
 export const generatedItemSchema = z.object({
-  id: idSchema, key: z.string().max(1200), ingredient: ingredientSchema, bought: z.boolean(),
+  id: idSchema, key: z.string().max(4000), ingredient: ingredientSchema, bought: z.boolean(),
   contributions: z.array(provenanceSchema).min(1).max(1400)
 }).strict();
 export type GeneratedItem = z.infer<typeof generatedItemSchema>;

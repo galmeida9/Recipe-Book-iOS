@@ -93,6 +93,15 @@ public struct StoredPlanResult: Codable, Sendable {
         self.plan = plan; self.generated = generated; self.listId = listId; self.warnings = warnings
     }
 }
+public struct GeneratedSection: Codable, Sendable {
+    public let planId: UUID
+    public let weekStart: String
+    public let planVersion: Int
+    public let items: [GeneratedShoppingItem]
+    public init(planId: UUID, weekStart: String, planVersion: Int, items: [GeneratedShoppingItem]) {
+        self.planId = planId; self.weekStart = weekStart; self.planVersion = planVersion; self.items = items
+    }
+}
 public enum CookingPlanner {
     private static let precision: Int64 = 1_000_000
     private static let maximum: Int64 = 999_999_999_999_999
@@ -309,5 +318,15 @@ public enum CookingPlanner {
             }
         }
         return PlanResult(plan: result, generated: rows, warnings: warnings)
+    }
+    public static func checking(_ stored: StoredPlanResult, itemId: UUID, bought: Bool, recipes: [PlannerRecipe],
+                                expectedVersion: Int) throws -> StoredPlanResult {
+        guard stored.plan.version == expectedVersion else { throw PlannerError.versionConflict }
+        var current = try reconcile(stored.plan, recipes: recipes, previous: stored.generated)
+        guard current.generated == stored.generated else { throw PlannerError.versionConflict }
+        guard let index = current.generated.firstIndex(where: { $0.id == itemId }) else { throw PlannerError.recipeUnavailable }
+        current.generated[index].bought = bought
+        current.plan.version += 1
+        return StoredPlanResult(plan: current.plan, generated: current.generated, listId: stored.listId, warnings: current.warnings)
     }
 }

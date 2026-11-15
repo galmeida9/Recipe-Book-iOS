@@ -77,7 +77,9 @@ private func singleDay(_ recipe: PlannerRecipe) throws -> WeeklyPlan {
     let recipe = plannerRecipe()
     let plan = try singleDay(recipe)
     let manual = ShoppingItem(ingredient: recipe.ingredients[0], bought: true)
-    let before = try JSONEncoder().encode(manual)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = .sortedKeys
+    let before = try encoder.encode(manual)
     let foreign = plannerRecipe(book: UUID())
     #expect(throws: PlannerError.self) {
         try CookingPlanner.replacing(plan, date: plannerMonday,
@@ -88,7 +90,7 @@ private func singleDay(_ recipe: PlannerRecipe) throws -> WeeklyPlan {
             replacement: PlanSlot(recipeId: recipe.id, recipeVersion: 2, servings: 2), recipes: [recipe], expectedVersion: 1)
     }
     _ = try CookingPlanner.reconcile(plan, recipes: [recipe])
-    #expect(try JSONEncoder().encode(manual) == before)
+    #expect(try encoder.encode(manual) == before)
 }
 @Test func plannerUnknownAmountsNeverMergeAndUnknownServingsAreNotInvented() throws {
     let unknown = plannerRecipe(quantity: nil, unit: nil, servings: nil)
@@ -127,4 +129,21 @@ private func singleDay(_ recipe: PlannerRecipe) throws -> WeeklyPlan {
     #expect(decoded.generated == stored.generated)
     #expect(decoded.listId == stored.listId)
     #expect(!String(decoding: data, as: UTF8.self).contains("title"))
+}
+@Test func plannerGeneratedCheckMutationIsVersionAndCurrentQuantityGuarded() throws {
+    let recipe = plannerRecipe()
+    let result = try CookingPlanner.reconcile(singleDay(recipe), recipes: [recipe])
+    let stored = StoredPlanResult(plan: result.plan, generated: result.generated, listId: UUID())
+    let checked = try CookingPlanner.checking(stored, itemId: stored.generated[0].id, bought: true,
+                                              recipes: [recipe], expectedVersion: stored.plan.version)
+    #expect(checked.generated[0].bought)
+    #expect(checked.plan.version == stored.plan.version + 1)
+    #expect(throws: PlannerError.self) {
+        try CookingPlanner.checking(checked, itemId: stored.generated[0].id, bought: false,
+                                    recipes: [recipe], expectedVersion: stored.plan.version)
+    }
+    #expect(throws: PlannerError.self) {
+        try CookingPlanner.checking(stored, itemId: stored.generated[0].id, bought: true,
+                                    recipes: [], expectedVersion: stored.plan.version)
+    }
 }
