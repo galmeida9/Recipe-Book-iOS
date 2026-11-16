@@ -15,10 +15,7 @@ public final class SharedGoogleSession: AccessTokenProvider {
 
     public static func configureNetworking() {
         guard !networkConfigured else { return }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 15
-        configuration.timeoutIntervalForResource = 20
-        configuration.waitsForConnectivity = false
+        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: Bundle.main.bundleURL.pathExtension == "appex")
         OIDURLSessionProvider.setSession(URLSession(configuration: configuration))
         networkConfigured = true
     }
@@ -64,7 +61,7 @@ public final class SharedGoogleSession: AccessTokenProvider {
         return try await withCheckedThrowingContinuation { continuation in
             state.performAction { _, _, error in
                 Task { @MainActor in
-                    if let error { continuation.resume(throwing: error); return }
+                    if let error { continuation.resume(throwing: GoogleTokenNetworkPolicy.mapped(error)); return }
                     do {
                         try Task.checkCancellation()
                         try self.validate(state)

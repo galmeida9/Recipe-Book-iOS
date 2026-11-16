@@ -91,3 +91,33 @@ test("official provider URL exposes only standard public authorization parameter
   assert.equal(url.searchParams.get("nonce"), nonce);
   assert.equal(url.searchParams.get("client_secret"), null);
 });
+test("slow provider exchange remains single-use and records only non-sensitive phases", async () => {
+  const flows = new FlowFixture();
+  const diagnostics: unknown[] = [];
+  let release!: () => void;
+  let started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  let calls = 0;
+  const provider: OAuthProvider = {
+    authorize: () => "https://accounts.google.com/o/oauth2/v2/auth",
+    exchange: async () => {
+      calls++; started();
+      await new Promise<void>(resolve => { release = resolve; });
+      return { id_token: "sensitive-id-token", access_token: "sensitive-access-token", token_type: "Bearer", expiry_date: Date.now() + 3600000 };
+    },
+    refresh: async () => { throw new Error("Not used"); }
+  };
+  const broker = new OAuthBroker(clientID, flows, provider, async () => ({ issuer: googleIssuer, subject: "synthetic" }),
+    event => diagnostics.push(event));
+  await broker.authorize(request);
+  await broker.callback({ state, code: exchange.code });
+  const first = broker.token(exchange);
+  await entered;
+  await assert.rejects(() => broker.token(exchange));
+  assert.equal(calls, 1, "A waiting token exchange cannot be replayed to Google.");
+  release();
+  assert.equal((await first).token_type, "Bearer");
+  const log = JSON.stringify(diagnostics);
+  for (const secret of [state, nonce, verifier, exchange.code, "sensitive-id-token", "sensitive-access-token"]) assert(!log.includes(secret));
+  assert(log.includes("flow_claimed") && log.includes("google_exchange_completed") && log.includes("token_verified"));
+});

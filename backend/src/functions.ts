@@ -164,7 +164,11 @@ export async function api(request: HttpRequest, context: InvocationContext): Pro
       return { status: 200, jsonBody: { enabled: true, mode: budget ? "bounded-pilot" : "api-usage",
         pilotExpiresAt: budget?.endsAt.toISOString() ?? null, globalUsageVisible: budget === null, reviewRequired: true }, headers: jsonHeaders };
     }
-    const oauth = await oauthRoute(request);
+    const oauth = await oauthRoute(request, event => {
+      // Only fixed phases, durations and safe app error codes. Never tokens,
+      // auth codes, state, PKCE values, subjects, request bodies or URLs.
+      context.log("OAuth token phase", event.phase, event.elapsedMs, event.outcome ?? "", context.invocationId);
+    });
     if (oauth) return oauth;
     const principal = await authenticate(request.headers.get("authorization"));
     return await dispatch(request, new RecipeBookService(principal));

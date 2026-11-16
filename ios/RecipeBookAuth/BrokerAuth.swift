@@ -40,6 +40,7 @@ protocol GoogleSessionDriver: AnyObject {
 }
 @MainActor
 public final class GoogleAuth: AuthenticationSession {
+    public static let sharingUnavailableNotification = Notification.Name("RecipeBook.SharedGoogleSessionUnavailable")
     private let driver: any GoogleSessionDriver
     private var credential: GoogleCredential?
     private var generation = 0
@@ -55,6 +56,8 @@ public final class GoogleAuth: AuthenticationSession {
         guard !signingIn, refreshTask == nil else { throw busy() }
         try Task.checkCancellation()
         signingIn = true
+        let previousCredential = credential
+        let wasSignedOut = explicitlySignedOut
         generation += 1
         let current = generation
         defer { signingIn = false }
@@ -66,9 +69,10 @@ public final class GoogleAuth: AuthenticationSession {
             credential = value
             explicitlySignedOut = false
         } catch {
-            credential = nil
-            explicitlySignedOut = true
-            try driver.signOut()
+            if current == generation {
+                credential = previousCredential
+                explicitlySignedOut = wasSignedOut || !driver.hasStoredSession
+            } else { try driver.signOut() }
             throw mapped(error)
         }
     }
@@ -126,6 +130,8 @@ public final class GoogleAuth: AuthenticationSession {
     private func signedOut() -> APIError { APIError(status: 401, code: "signed_out", message: "Sign in to Recipe Book with Google.") }
     private func busy() -> APIError { APIError(status: 0, code: "auth_busy", message: "A sign-in operation is still finishing. Try again after it closes.") }
     private func mapped(_ error: Error) -> Error {
+        let transport = GoogleTokenNetworkPolicy.mapped(error)
+        if transport is APIError || transport is CancellationError { return transport }
         let value = error as NSError
         if value.domain == OIDOAuthTokenErrorDomain {
             return APIError(status: 401, code: "sign_in_required", message: "Your Google sign-in expired. Sign in again.")
@@ -183,6 +189,7 @@ private final class AppAuthDriver: GoogleSessionDriver {
             throw APIError(status: 0, code: "auth_window", message: "Bring Recipe Book to the foreground before signing in.")
         }
         while let presented = controller.presentedViewController { controller = presented }
+        let previousState = state
         return try await withCheckedThrowingContinuation { continuation in
             flow = OIDAuthState.authState(byPresenting: request, presenting: controller, prefersEphemeralSession: true) { result, error in
                 Task { @MainActor in
@@ -194,7 +201,10 @@ private final class AppAuthDriver: GoogleSessionDriver {
                         let value = try self.snapshot(result)
                         try self.persist(result)
                         continuation.resume(returning: value)
-                    } catch { continuation.resume(throwing: error) }
+                    } catch {
+                        self.state = previousState
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
         }
@@ -249,7 +259,12 @@ private final class AppAuthDriver: GoogleSessionDriver {
         } else if status != errSecSuccess {
             throw APIError(status: 0, code: "keychain", message: "Unable to update secure Google sign-in storage.")
         }
-        try SharedGoogleSession(baseURL: configuration.apiBaseURL).save(state)
+        do {
+            try SharedGoogleSession(baseURL: configuration.apiBaseURL).save(state)
+        } catch {
+            NotificationCenter.default.post(name: GoogleAuth.sharingUnavailableNotification, object: nil,
+                userInfo: ["message": "Google sign-in succeeded, but Instagram sharing could not access protected shared sign-in storage. \(error.localizedDescription)"])
+        }
     }
 }
 #endif

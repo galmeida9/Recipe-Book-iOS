@@ -2,6 +2,42 @@ import Foundation
 import XCTest
 @testable import RecipeBookAuth
 import RecipeBookCore
+@preconcurrency import AppAuthCore
+
+private final class TokenTransportFixture: URLProtocol, @unchecked Sendable {
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var count = 0
+        var mode = 0
+    }
+    private static let state = State()
+    static func reset(mode: Int) { state.lock.withLock { state.count = 0; state.mode = mode } }
+    static var requests: Int { state.lock.withLock { state.count } }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "token-transport.invalid" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let mode = Self.state.lock.withLock { Self.state.count += 1; return Self.state.mode }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { [self] in
+            if mode == 1 {
+                client?.urlProtocol(self, didFailWithError: URLError(.timedOut))
+                return
+            }
+            if mode == 2 {
+                client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+                return
+            }
+            let status = mode == 3 ? 503 : 200
+            let body = status == 200 ? #"{"access_token":"synthetic-only","token_type":"Bearer","expires_in":3600}"#
+                : #"{"error":"temporarily_unavailable","error_description":"Synthetic cold service"}"#
+            guard let url = request.url, let response = HTTPURLResponse(url: url, statusCode: status,
+                httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else { return }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+    override func stopLoading() {}
+}
 
 @MainActor
 private final class GoogleDriverFixture: GoogleSessionDriver {
@@ -35,6 +71,52 @@ private final class GoogleDriverFixture: GoogleSessionDriver {
 
 @MainActor
 final class GoogleAuthTests: XCTestCase {
+    private func transportRequest() -> OIDTokenRequest {
+        OIDTokenRequest(configuration: OIDServiceConfiguration(
+            authorizationEndpoint: URL(string: "https://token-transport.invalid/authorize")!,
+            tokenEndpoint: URL(string: "https://token-transport.invalid/token")!),
+            grantType: "refresh_token", authorizationCode: nil, redirectURL: nil,
+            clientID: "synthetic-public-client", clientSecret: nil, scopes: nil,
+            refreshToken: "synthetic-inert-refresh", codeVerifier: nil, additionalParameters: nil)
+    }
+    private func performTransportRequest() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            OIDAuthorizationService.perform(transportRequest()) { response, error in
+                if let error { continuation.resume(throwing: GoogleTokenNetworkPolicy.mapped(error)) }
+                else if let token = response?.accessToken { continuation.resume(returning: token) }
+                else { continuation.resume(throwing: URLError(.badServerResponse)) }
+            }
+        }
+    }
+    func testAppAuthRetainsConfiguredSessionAcrossDelayedCallbackWithoutRetryingTokenPOST() async throws {
+        let previous = OIDURLSessionProvider.session()
+        defer { OIDURLSessionProvider.setSession(previous) }
+        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: false)
+        configuration.protocolClasses = [TokenTransportFixture.self]
+        autoreleasepool { OIDURLSessionProvider.setSession(URLSession(configuration: configuration)) }
+        TokenTransportFixture.reset(mode: 0)
+        let token = try await performTransportRequest()
+        XCTAssertEqual(token, "synthetic-only")
+        XCTAssertEqual(TokenTransportFixture.requests, 1)
+        XCTAssertEqual(OIDURLSessionProvider.session().configuration.timeoutIntervalForResource, 120)
+    }
+    func testAppAuthTimeoutCancellationAndHTTP503CompleteOnceWithoutCodeReplay() async throws {
+        let previous = OIDURLSessionProvider.session()
+        defer { OIDURLSessionProvider.setSession(previous) }
+        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: false)
+        configuration.protocolClasses = [TokenTransportFixture.self]
+        OIDURLSessionProvider.setSession(URLSession(configuration: configuration))
+        for mode in [1, 2, 3] {
+            TokenTransportFixture.reset(mode: mode)
+            do { _ = try await performTransportRequest(); XCTFail("Synthetic transport failure must remain a failure.") }
+            catch {
+                if mode == 1 { XCTAssertEqual((error as? APIError)?.code, "auth_transport_-1001") }
+                if mode == 2 { XCTAssertTrue(error is CancellationError) }
+                if mode == 3 { XCTAssertFalse(error is CancellationError) }
+            }
+            XCTAssertEqual(TokenTransportFixture.requests, 1)
+        }
+    }
     private func configuration() throws -> GoogleAuthConfiguration {
         try GoogleAuthConfiguration(apiBaseURL: URL(string: "https://fixture.invalid/api")!)
     }
@@ -97,5 +179,19 @@ final class GoogleAuthTests: XCTestCase {
                                             subject: "10000001")
         do { _ = try await auth.accessToken(); XCTFail("Expired ID tokens must fail.") }
         catch let error as APIError { XCTAssertEqual(error.status, 401) }
+    }
+    func testFailedInteractiveTokenConnectionDoesNotDeleteAnExistingStoredGoogleSession() async throws {
+        let driver = GoogleDriverFixture()
+        let auth = GoogleAuth(configuration: try configuration(), driver: driver)
+        _ = try await auth.accessToken()
+        driver.error = NSError(domain: "org.openid.appauth.general", code: -5,
+            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSURLErrorDomain, code: URLError.timedOut.rawValue)])
+        do { try await auth.signIn(); XCTFail("The timed-out exchange must not be reported as a successful sign-in.") }
+        catch let error as APIError { XCTAssertEqual(error.code, "auth_transport_-1001") }
+        XCTAssertTrue(auth.hasSession())
+        XCTAssertTrue(driver.hasStoredSession)
+        driver.error = nil
+        let token = try await auth.accessToken()
+        XCTAssertEqual(token, "synthetic-google-ID-token")
     }
 }

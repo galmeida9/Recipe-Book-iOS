@@ -62,6 +62,11 @@ export interface OAuthProvider {
   exchange(code: string, verifier: string): Promise<Credentials>;
   refresh(token: string): Promise<Credentials>;
 }
+export interface OAuthDiagnostic {
+  phase: "token_received" | "flow_claim_started" | "flow_claimed" | "google_exchange_started" | "google_exchange_completed" | "token_verified" | "token_failed";
+  elapsedMs: number;
+  outcome?: string;
+}
 export class GoogleOAuthProvider implements OAuthProvider {
   constructor(private readonly clientID: string, private readonly secret: string, private readonly callback: string) {}
   private client() { return new OAuth2Client(this.clientID, this.secret, this.callback); }
@@ -83,7 +88,8 @@ export class GoogleOAuthProvider implements OAuthProvider {
 export class OAuthBroker {
   constructor(private readonly clientID: string, private readonly flows: OAuthFlowStore,
     private readonly provider: OAuthProvider,
-    private readonly verify: (token: string, nonce?: string) => Promise<Principal>) {}
+    private readonly verify: (token: string, nonce?: string) => Promise<Principal>,
+    private readonly diagnose: (event: OAuthDiagnostic) => void = () => {}) {}
   config() { return { clientID: this.clientID, callbackURL: nativeOAuthCallback }; }
   async authorize(input: Record<string, string>) {
     const value = z.object({
@@ -110,6 +116,9 @@ export class OAuthBroker {
     return callback.href;
   }
   async token(input: Record<string, string>) {
+    const started = Date.now();
+    const phase = (value: OAuthDiagnostic["phase"]) => this.diagnose({ phase: value, elapsedMs: Date.now() - started });
+    phase("token_received");
     invariant(input.client_id === this.clientID && input.client_secret === undefined, 400, "invalid_client", "Use the configured public client without a mobile secret.");
     let credentials: Credentials;
     let nonce: string | undefined;
@@ -117,9 +126,13 @@ export class OAuthBroker {
       const value = z.object({ grant_type: z.literal("authorization_code"), client_id: z.literal(this.clientID),
         redirect_uri: z.literal(nativeOAuthCallback), code: z.string().min(1).max(4096), code_verifier: verifierSchema }).strict().parse(input);
       const challenge = createHash("sha256").update(value.code_verifier).digest("base64url");
+      phase("flow_claim_started");
       nonce = await this.flows.consume(value.code, challenge);
+      phase("flow_claimed");
+      phase("google_exchange_started");
       try { credentials = await this.provider.exchange(value.code, value.code_verifier); }
       catch (error) { throw providerError(error, "Google sign-in could not be completed. Start sign-in again."); }
+      phase("google_exchange_completed");
     } else {
       const value = z.object({ grant_type: z.literal("refresh_token"), client_id: z.literal(this.clientID),
         refresh_token: z.string().min(1).max(8192), scope: z.string().optional() }).strict().parse(input);
@@ -131,6 +144,7 @@ export class OAuthBroker {
       typeof credentials.expiry_date === "number" && credentials.expiry_date > Date.now(),
     401, "invalid_google_response", "Google returned no valid sign-in credentials.");
     await this.verify(credentials.id_token, nonce);
+    phase("token_verified");
     return { access_token: credentials.access_token, id_token: credentials.id_token,
       ...(credentials.refresh_token ? { refresh_token: credentials.refresh_token } : {}),
       token_type: "Bearer", expires_in: Math.floor((credentials.expiry_date - Date.now()) / 1000),
@@ -152,7 +166,7 @@ function providerError(error: unknown, message: string) {
       error.response.status >= 400 && error.response.status < 500) return new AppError(400, "invalid_grant", message);
   return new AppError(503, "identity_unavailable", "Google sign-in is temporarily unavailable. Try again with a new sign-in request.");
 }
-export async function oauthRoute(request: HttpRequest): Promise<HttpResponseInit | null> {
+export async function oauthRoute(request: HttpRequest, diagnose: (event: OAuthDiagnostic) => void = () => {}): Promise<HttpResponseInit | null> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api\//, "/");
   if (!path.startsWith("/auth/google/")) return null;
@@ -164,7 +178,7 @@ export async function oauthRoute(request: HttpRequest): Promise<HttpResponseInit
   invariant(/^[a-z0-9.-]+\.azurewebsites\.net$/.test(host), 503, "configuration", "The verified HTTPS server callback host is required.");
   const provider = new GoogleOAuthProvider(clientID, secret, `https://${host}/api/auth/google/callback`);
   const broker = new OAuthBroker(clientID, new SQLFlowStore(), provider,
-    (token, nonce) => googleAuthenticator({ serverClientID: clientID, ...(nonce === undefined ? {} : { nonce }) })("Bearer " + token));
+    (token, nonce) => googleAuthenticator({ serverClientID: clientID, ...(nonce === undefined ? {} : { nonce }) })("Bearer " + token), diagnose);
   if (request.method === "GET" && path === "/auth/google/config") return { status: 200, jsonBody: broker.config(), headers };
   if (request.method === "GET" && path === "/auth/google/authorize") return { status: 302, headers: { ...headers, Location: await broker.authorize(unique(url.searchParams)) } };
   if (request.method === "GET" && path === "/auth/google/callback") return { status: 302, headers: { ...headers, Location: await broker.callback(unique(url.searchParams)) } };
@@ -174,7 +188,11 @@ export async function oauthRoute(request: HttpRequest): Promise<HttpResponseInit
     invariant(Buffer.byteLength(text) <= 16384, 413, "request_limit", "Sign-in request exceeded the limit.");
     try { return { status: 200, jsonBody: await broker.token(unique(new URLSearchParams(text))), headers }; }
     catch (error) {
-      if (error instanceof AppError && error.status < 500) return { status: 400, jsonBody: { error: error.code, error_description: error.message }, headers };
+      diagnose({ phase: "token_failed", elapsedMs: 0, outcome: error instanceof AppError ? error.code : "server_error" });
+      if (error instanceof AppError) return {
+        status: error.status < 500 ? 400 : error.status,
+        jsonBody: { error: error.status < 500 ? error.code : "temporarily_unavailable", error_description: error.message }, headers
+      };
       throw error;
     }
   }

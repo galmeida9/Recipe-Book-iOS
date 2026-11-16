@@ -11,6 +11,7 @@ struct RecipeBookApp: App {
     @State private var incomingReel: URL?
     @State private var inboxError: String?
     @State private var sharedInboxUnavailable = false
+    @State private var sharingNotice: String?
 
     init() {
         #if DEBUG
@@ -70,6 +71,12 @@ struct RecipeBookApp: App {
                 else { inboxError = "Reel importing is not enabled for this core trial. Saved shared links remain queued until imports are available." }
             case .ignored: break
             }
+            .onReceive(NotificationCenter.default.publisher(for: GoogleAuth.sharingUnavailableNotification)) { notification in
+                sharingNotice = notification.userInfo?["message"] as? String
+            }
+            .alert("Instagram sharing needs attention", isPresented: Binding(get: { sharingNotice != nil }, set: { if !$0 { sharingNotice = nil } })) {
+                Button("OK") { sharingNotice = nil }
+            } message: { Text(sharingNotice ?? "") }
         }
         .alert("Unable to read shared Reel", isPresented: Binding(get: { inboxError != nil }, set: { if !$0 { inboxError = nil } })) {
             Button("OK") { inboxError = nil }
