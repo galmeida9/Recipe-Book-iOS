@@ -68,7 +68,9 @@ test("audio-only evidence cannot borrow quantities, durations or servings from v
   const audio = [{ id: "T0", kind: "transcript" as const, text: "Boil tomatoes." }];
   assert.equal(validateExtraction(value, url, audio).draft.ingredients[0]!.quantity, null);
   value.total_minutes = 18;
-  assert.throws(() => validateExtraction(value, url, audio), /unsupported|incomplete/);
+  const guarded = validateExtraction(value, url, audio);
+  assert.equal(guarded.draft.totalMinutes, null);
+  assert.match(guarded.warnings.join(" "), /not explicitly stated/);
 });
 test("untrusted comments are filtered; schema enums are generated from each actual evidence set", () => {
   const input = extractionInput(url, { caption: "400 g tomatoes", transcript: null,
@@ -119,4 +121,39 @@ test("Portuguese source units and durations normalize explicitly without inventi
   assert.equal(result.draft.ingredients[1]!.quantity, null);
   assert.equal(result.draft.steps.length, 1);
   assert.equal(result.extraction.steps[0]!.temperature_c, null);
+});
+test("method ingredient qualifiers are grounded in the already-validated caption, without accepting a new food or action", () => {
+  const value = recipe();
+  value.ingredients = [{ name: "coarse salt", quantity: 1, unit: "kg", notes: null, evidence_ids: ["C0"] }];
+  value.steps = [{ instruction: "Arrange coarse salt.", duration_minutes_min: null, duration_minutes_max: null,
+    temperature_c: null, evidence_ids: ["T1"] }];
+  const result = validateExtraction(value, url, [
+    { id: "C0", kind: "caption", text: "1 kg coarse salt" },
+    { id: "T1", kind: "transcript", text: "Arrange salt." }
+  ]);
+  assert.deepEqual(result.extraction.steps[0]!.evidence_ids, ["T1", "C0"]);
+  value.steps[0]!.instruction = "Arrange sugar.";
+  assert.throws(() => validateExtraction(value, url, [
+    { id: "C0", kind: "caption", text: "1 kg coarse salt" }, { id: "T1", kind: "transcript", text: "Arrange salt." }
+  ]), /not grounded/);
+});
+test("an unambiguous ingredient can be named without its size qualifier in a source-grounded method", () => {
+  const value = recipe();
+  value.ingredients = [{ name: "batatas pequenas", quantity: 1, unit: "kg", notes: null, evidence_ids: ["C0"] }];
+  value.steps = [{ instruction: "Retirar as batatas.", duration_minutes_min: null, duration_minutes_max: null,
+    temperature_c: null, evidence_ids: ["T1"] }];
+  const result = validateExtraction(value, url, [
+    { id: "C0", kind: "caption", text: "1 kg batatas pequenas" }, { id: "T1", kind: "transcript", text: "Depois retire." }
+  ]);
+  assert.deepEqual(result.extraction.steps[0]!.evidence_ids, ["T1", "C0"]);
+});
+test("explicit approximate Portuguese yield remains reviewable, not inferred from ingredient counts or video time", () => {
+  const value = recipe();
+  value.servings = 4;
+  const result = validateExtraction(value, url, [...source, {
+    id: "C1", kind: "caption", text: "Quantidades estimadas para cerca de 4 pessoas."
+  }]);
+  assert.equal(result.draft.servings, 4);
+  assert.match(result.warnings.join(" "), /serving count is approximate/);
+  assert.throws(() => validateExtraction(value, url, source), /unsupported serving count/);
 });

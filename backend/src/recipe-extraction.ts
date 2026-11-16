@@ -125,6 +125,11 @@ const words = (text: string) => normalized(text).split(/[\s-]+/).map(word => {
   const clean = word.replace(/^[.-]+|[.-]+$/g, "");
   return actionWords[clean] ?? clean.replace(/(?:es|s)$/, "");
 }).filter(Boolean);
+export function unsupportedInstructionWords(instruction: string, support: string): string[] {
+  const supportWords = new Set(words(support));
+  const glue = new Set(words("a an the and or to in into on with for until then it them of from at as is are your all each gently about remaining o os as de do da dos das no na nos nas um uma e ou para com ate que bem muito pouco por em depois enquanto ao aos pelo pela sem cerca quando este esta isto"));
+  return words(instruction).filter(word => !supportWords.has(word) && !glue.has(word) && !/^\d/.test(word));
+}
 const amountPattern = String.raw`(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?)`;
 function amount(text: string): number {
   return text.trim().split(/\s+/).reduce((sum, token) => {
@@ -204,6 +209,18 @@ export function validateExtraction(output: unknown, sourceURL: string, sources: 
     return { name: item.name, quantity: item.quantity === null ? null : String(item.quantity), unit: item.unit, preparation: item.notes };
   });
   for (const step of value.steps) {
+    const stepWords = new Set(words(step.instruction));
+    // A clear method can name an ingredient more precisely than the narration.
+    // Add only already-validated ingredient citations, never new model facts.
+    for (const ingredient of value.ingredients) {
+      const ingredientWords = words(ingredient.name);
+      const base = ingredientWords[0];
+      const unambiguousBase = base && base.length >= 3 && stepWords.has(base) &&
+        value.ingredients.filter(other => words(other.name)[0] === base).length === 1;
+      if (ingredientWords.every(word => stepWords.has(word)) || unambiguousBase) {
+        step.evidence_ids = [...new Set([...step.evidence_ids, ...ingredient.evidence_ids])];
+      }
+    }
     const support = cited(step.evidence_ids).map(source => source.text).join("\n");
     const facts = numericFacts(support);
     if (step.temperature_c !== null && !new RegExp(`${step.temperature_c}\\s*(?:°\\s*)?(?:c\\b|celsius)`, "i").test(support)) {
@@ -232,16 +249,20 @@ export function validateExtraction(output: unknown, sourceURL: string, sources: 
     if (step.duration_minutes_min !== null) invariant(/\b(?:min(?:ute)?s?|minutos?|hours?|hrs?|horas?|seconds?|secs?|segundos?)\b/i.test(step.instruction),
       502, "extraction_time", "The readable instruction omitted its duration.");
     // Reject new food names and unsupported actions, not merely new numbers.
-    const supportWords = new Set(words(support));
-    const glue = new Set(words("a an the and or to in into on with for until then it them of from at as is are your all each gently about remaining o os as de do da dos das no na nos nas um uma e ou para com ate que bem muito pouco por em depois enquanto ao aos pelo pela sem cerca quando este esta isto"));
-    invariant(words(step.instruction).every(word => supportWords.has(word) || glue.has(word) || /^\d/.test(word)),
+    invariant(unsupportedInstructionWords(step.instruction, support).length === 0,
       502, "extraction_instruction", "The instruction includes wording not grounded in its cited source; manual review is required.");
   }
   const primary = sources.filter(source => source.kind !== "comment").map(source => source.text).join("\n");
-  if (value.servings !== null) invariant(new RegExp(`(?:serves|servings|yield)\\s*:?\\s*${value.servings}\\b|\\b${value.servings}\\s*servings`, "i").test(primary),
+  if (value.servings !== null) invariant(new RegExp(`(?:serves|servings|yield|rende|porcoes)\\s*:?\\s*${value.servings}\\b|\\b${value.servings}\\s*(?:servings|pessoas|porcoes)\\b`, "i").test(normalized(primary)),
     502, "extraction_servings", "The model inferred an unsupported serving count.");
-  if (value.total_minutes !== null) invariant(new RegExp(`total\\s*(?:time)?\\s*:?\\s*${value.total_minutes}\\s*(?:min|minute)`, "i").test(primary),
-    502, "extraction_total", "The model inferred total time from incomplete timings.");
+  if (value.servings !== null && primary.split(/\r?\n/).some(line =>
+    /servings|serves|yield|pessoas|porcoes/i.test(normalized(line)) && /estimad|cerca|approx|about|estimat/i.test(normalized(line)))) {
+    warnings.push("The source serving count is approximate; confirm it before scaling ingredients.");
+  }
+  if (value.total_minutes !== null && !new RegExp(`(?:total\\s*(?:time)?|tempo\\s+total)\\s*:?\\s*${value.total_minutes}\\s*(?:min|minute|minuto)`, "i").test(normalized(primary))) {
+    value.total_minutes = null;
+    warnings.push("Total recipe time is not explicitly stated; individual cooking times are not a complete total.");
+  }
   if (value.servings === null) warnings.push("Servings are unknown.");
   if (value.total_minutes === null) warnings.push("Total time is unknown.");
   if (ingredients.some(item => item.quantity === null)) warnings.push("Some ingredient amounts are unknown or conflicting; confirm before shopping.");
