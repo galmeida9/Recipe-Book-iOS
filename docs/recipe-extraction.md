@@ -81,6 +81,23 @@ numeric builds (not an instruction to enable them without the remaining gates):
 | Audio | `S9A11NvceWaGorwwh` | `0.0.83` | 512 MiB |
 | Model | `0pArcqOZFSjoCBlJX` | `0.1.65` | 256 MiB |
 
+The corresponding build IDs are `JRCDaeR2IqpWXAu2u`,
+`dVBUTLy3gVk9PVtTq` and `WzI4lP7dqm8NOC3Q5`. Evidence comes from the
+public [actor metadata API](https://docs.apify.com/api/v2/actor-get) and
+`GET /v2/actor-builds/{buildId}`. All three builds reported `SUCCEEDED`.
+Current effective Free-tier event prices read from each actor's `pricingInfos`
+(not a complete per-import invoice):
+
+| Stage | Free-tier event prices |
+| --- | --- |
+| Metadata | USD 0.001 actor start plus USD 0.0026/reel; shares USD 0.007, transcript USD 0.048/started minute and video download USD 0.02/started MiB are disabled |
+| Audio | USD 0.001/result plus USD 0.0045/started audio minute; USD 0.002 enhanced crawl is disabled |
+| Model | USD 0.002/result plus separately billed platform/model usage |
+
+These are dated review evidence, not immutable guarantees or enabled runtime
+settings. Numeric build pinning does not freeze account-level event prices.
+Reconfirm actual prices and returned hard-cap options before activation.
+
 The audio stage requests 512 MiB; a generic 256-MiB request is incompatible with
 the reviewed build. The model actor's published Free-plan policy charges model
 usage at **ten times** standard token rates, in addition to its USD 0.002/result
