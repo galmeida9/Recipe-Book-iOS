@@ -46,11 +46,16 @@ on:
         required: true
         type: boolean
         default: false
+      live_auth_probe:
+        description: 'Only an actual iOS AppAuth inert-code transport check against the owned API; no customer credentials'
+        required: true
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   compile:
-    if: github.event_name == 'push' || (inputs.licensed_host_approved && !inputs.installation_check_only)
+    if: github.event_name == 'push' || (inputs.licensed_host_approved && !inputs.installation_check_only && !inputs.live_auth_probe)
     runs-on: macos-latest
     timeout-minutes: 20
     env:
@@ -103,7 +108,7 @@ jobs:
             plan) SELECTOR="-only-testing:RecipeBookUITests/PreviewCaptureTests/testCaptureDisclosedPlanScreen" ;;
             *) exit 1 ;;
           esac
-          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build -resultBundlePath native-tests.xcresult "$SELECTOR" CODE_SIGNING_ALLOWED=NO test
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build -resultBundlePath native-tests.xcresult "$SELECTOR" -skip-testing:RecipeBookUITests/GoogleAuthTests/testLiveOwnedTokenEndpointRejectsInertCodeThroughActualAppAuthTransport CODE_SIGNING_ALLOWED=NO test
       - name: Export requested native fixture screenshots locally on the runner
         run: |
           xcrun xcresulttool export attachments --path native-tests.xcresult --output-path fixture-screenshots
@@ -133,3 +138,25 @@ jobs:
       package_mode: ${{ inputs.trial_api_url != '' && 'core-trial' || 'installation-check' }}
       api_url: ${{ inputs.trial_api_url }}
       imports_enabled: ${{ inputs.trial_imports_enabled }}
+  live-auth-transport:
+    if: github.event_name == 'workflow_dispatch' && inputs.licensed_host_approved && inputs.live_auth_probe && !inputs.installation_check_only
+    runs-on: macos-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select installed Xcode and iPhone runtime
+        run: |
+          python3 <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for app in glob.glob("/Applications/Xcode*.app"):
+              developer = app + "/Contents/Developer"
+              version = re.search(r"Xcode ([0-9.]+)", subprocess.check_output([developer + "/usr/bin/xcodebuild", "-version"], text=True)).group(1)
+              candidates.append((tuple(map(int, version.split("."))), developer))
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("DEVELOPER_DIR=" + max(candidates)[1] + "\n")
+          PY
+      - name: Exercise actual iOS AppAuth transport against only the owned inert-code endpoint
+        run: |
+          ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d,reverse=True) if "iOS" in k for x in d[k] if x.get("isAvailable") and x["name"].startswith("iPhone")))')
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination "id=$ID" -derivedDataPath auth-transport-build -only-testing:RecipeBookUITests/GoogleAuthTests/testLiveOwnedTokenEndpointRejectsInertCodeThroughActualAppAuthTransport CODE_SIGNING_ALLOWED=NO test

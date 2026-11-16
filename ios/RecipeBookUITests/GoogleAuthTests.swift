@@ -71,6 +71,31 @@ private final class GoogleDriverFixture: GoogleSessionDriver {
 
 @MainActor
 final class GoogleAuthTests: XCTestCase {
+    func testLiveOwnedTokenEndpointRejectsInertCodeThroughActualAppAuthTransport() async throws {
+        let previous = OIDURLSessionProvider.session()
+        defer { OIDURLSessionProvider.setSession(previous) }
+        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: false)
+        let session = URLSession(configuration: configuration)
+        OIDURLSessionProvider.setSession(session)
+        let base = URL(string: "https://recipe-api-nb2yqx3agzmou.azurewebsites.net/api/")!
+        let config = try GoogleAuthConfiguration(apiBaseURL: base)
+        let discovery = try await GoogleAuthDiscovery.load(configuration: config, session: session)
+        let request = OIDTokenRequest(configuration: OIDServiceConfiguration(
+            authorizationEndpoint: base.appendingPathComponent("auth/google/authorize"),
+            tokenEndpoint: base.appendingPathComponent("auth/google/token")),
+            grantType: "authorization_code", authorizationCode: "synthetic-inert-native-probe-" + UUID().uuidString,
+            redirectURL: config.callbackURL, clientID: discovery.clientID, clientSecret: nil, scopes: nil,
+            refreshToken: nil, codeVerifier: String(repeating: "v", count: 43), additionalParameters: nil)
+        let start = Date()
+        let failure: NSError = await withCheckedContinuation { continuation in
+            OIDAuthorizationService.perform(request) { _, error in
+                continuation.resume(returning: (error as NSError?) ?? NSError(domain: "SyntheticUnexpectedSuccess", code: 0))
+            }
+        }
+        XCTAssertEqual(failure.domain, OIDOAuthTokenErrorDomain, "Actual iOS transport must receive the OAuth response, not time out.")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 90)
+        print("LIVE_AUTH_TRANSPORT: actual iOS AppAuth received the owned endpoint's expected inert-code OAuth rejection in \(Date().timeIntervalSince(start)) seconds; no customer identity or Google code was used.")
+    }
     private func transportRequest() -> OIDTokenRequest {
         OIDTokenRequest(configuration: OIDServiceConfiguration(
             authorizationEndpoint: URL(string: "https://token-transport.invalid/authorize")!,
