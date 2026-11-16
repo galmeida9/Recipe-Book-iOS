@@ -503,7 +503,8 @@ public struct PlanProvenance: Equatable, Hashable, Sendable {
     public var weekStart: PlanDate
     /// Plan version the item was generated at (needed when checking it off).
     public var planVersion: Int
-    /// Current titles of the contributing recipes, for display only.
+    /// Current titles of the recipes that contributed to THIS item (row-level, not the whole plan),
+    /// for display only. Leave empty when per-item contributions are unknown.
     public var recipeTitles: [String]
 
     public init(planID: PlanID, bookID: BookID, weekStart: PlanDate, planVersion: Int, recipeTitles: [String]) {

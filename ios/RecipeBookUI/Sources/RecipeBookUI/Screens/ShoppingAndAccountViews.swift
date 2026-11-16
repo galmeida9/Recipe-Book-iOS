@@ -203,7 +203,7 @@ struct ShoppingListView: View {
                             Text(amount).monospacedDigit()
                         }
                         if let source = sourceText(item) {
-                            Text("for \(source)").lineLimit(2)
+                            Text(source).lineLimit(2)
                         }
                     }
                     .font(.caption)
@@ -235,10 +235,10 @@ struct ShoppingListView: View {
     }
 
     private func sourceText(_ item: ShoppingItem) -> String? {
-        if case .generated(let provenance) = item.origin, !provenance.recipeTitles.isEmpty {
-            return ListFormatter.localizedString(byJoining: provenance.recipeTitles)
+        if case .generated(let provenance) = item.origin {
+            return ShoppingListRules.generatedSourceText(provenance)
         }
-        return item.sourceRecipeTitle
+        return item.sourceRecipeTitle.map { "for \($0)" }
     }
 
     @ViewBuilder

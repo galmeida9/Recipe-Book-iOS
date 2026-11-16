@@ -122,6 +122,14 @@ public extension ShoppingListRules {
     /// Items generated from the weekly plan, kept separate from what the user added.
     static func generated(_ items: [ShoppingItem]) -> [ShoppingItem] { ordered(items.filter(\.isGenerated)) }
     static func manual(_ items: [ShoppingItem]) -> [ShoppingItem] { ordered(items.filter { !$0.isGenerated }) }
+
+    /// Row caption for a generated item. Names only the recipes that contributed to *this* item;
+    /// without row-level contributions it stays neutral rather than crediting every planned recipe.
+    static func generatedSourceText(_ provenance: PlanProvenance) -> String {
+        let titles = provenance.recipeTitles.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !titles.isEmpty else { return "From this meal plan" }
+        return "for " + ListFormatter.localizedString(byJoining: titles)
+    }
 }
 
 // MARK: - Step ordering (accessible alternative to drag-to-reorder)

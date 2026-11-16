@@ -76,11 +76,13 @@ actor PreviewRecipeBookService: RecipeBookService {
             }
         }, version: 1, warnings: ["Preview: no recipe in this book is labelled “Full meal”."], shoppingListID: "l1")
         plans["b1|\(week)"] = plan
-        let provenance = PlanProvenance(planID: "p1", bookID: "b1", weekStart: week, planVersion: 1,
-                                        recipeTitles: ["Roasted Tomato Soup", "Lemon Yoghurt Cake"])
+        // Row-level provenance: each generated item names only the planned recipe it came from.
+        func provenance(_ title: String) -> ShoppingItemOrigin {
+            .generated(PlanProvenance(planID: "p1", bookID: "b1", weekStart: week, planVersion: 1, recipeTitles: [title]))
+        }
         lists[0].items += [
-            ShoppingItem(id: "g1", name: "Tomatoes", quantity: "1", unit: "kg", origin: .generated(provenance)),
-            ShoppingItem(id: "g2", name: "Flour", quantity: "250", unit: "g", origin: .generated(provenance)),
+            ShoppingItem(id: "g1", name: "Tomatoes", quantity: "1", unit: "kg", origin: provenance("Roasted Tomato Soup")),
+            ShoppingItem(id: "g2", name: "Flour", quantity: "250", unit: "g", origin: provenance("Lemon Yoghurt Cake")),
         ]
     }
 

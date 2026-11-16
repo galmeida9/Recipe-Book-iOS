@@ -254,6 +254,9 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertEqual(ShoppingItem(id: "x", name: "X").origin, .manual)
         XCTAssertEqual(ShoppingListRules.generated(items).map(\.id), ["g", "g2"])
         XCTAssertEqual(ShoppingListRules.manual(items).map(\.id), ["m"])
+        XCTAssertEqual(ShoppingListRules.generatedSourceText(provenance), "for Soup")
+        let unknown = PlanProvenance(planID: "p", bookID: "b", weekStart: "2025-06-09", planVersion: 3, recipeTitles: [])
+        XCTAssertEqual(ShoppingListRules.generatedSourceText(unknown), "From this meal plan")
     }
 
     func testStepOrderingMovesWithinBounds() {
