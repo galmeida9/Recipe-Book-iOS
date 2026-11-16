@@ -4,6 +4,7 @@ import { AppError, idSchema, invariant, requiredSetting } from "./contracts.js";
 import { RecipeBookService } from "./service.js";
 import { ImportService } from "./imports.js";
 import { PlannerService } from "./planner-service.js";
+import { googleCertificateReadiness } from "./auth.js";
 
 if (process.env["OWNER_READ_DIAGNOSTICS_ENABLED"] === "true") {
   app.http("ownerReadDiagnostics", {
@@ -17,6 +18,7 @@ if (process.env["OWNER_READ_DIAGNOSTICS_ENABLED"] === "true") {
         return result;
       };
       try {
+        await measure("google_certificate_fetch_only", () => googleCertificateReadiness());
         const userId = idSchema.parse(requiredSetting("OWNER_READ_DIAGNOSTICS_ACCOUNT"));
         const principal = await measure("existing_account_binding", () => serializable(async transaction => {
           const rows = await query<{ issuer: string; subject: string }>(transaction,
@@ -38,7 +40,8 @@ if (process.env["OWNER_READ_DIAGNOSTICS_ENABLED"] === "true") {
         }
         await measure("shopping_lists", () => service.shoppingLists());
         await measure("book_import_jobs", () => new ImportService(service).list());
-        return { status: 200, jsonBody: { completed: true, entries, note: "Real workload identity/business-service read timings; no customer credentials or content returned." },
+        return { status: 200, jsonBody: { completed: true, entries,
+          note: "Workload business-service/SQL timings plus public certificate fetch only; not a customer JWT or iPhone HTTP authentication proof. No customer credentials or content returned." },
           headers: { "Cache-Control": "no-store" } };
       } catch (error) {
         return { status: 503, jsonBody: { completed: false, entries,

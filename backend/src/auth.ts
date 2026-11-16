@@ -6,6 +6,10 @@ const clientPattern = /^\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/;
 const googleKeys = createRemoteJWKSet(new URL("https://www.googleapis.com/oauth2/v3/certs"),
   { timeoutDuration: 5000, cooldownDuration: 30_000 });
 
+export async function googleCertificateReadiness(): Promise<void> {
+  await googleKeys.reload();
+}
+
 export function googleAuthenticator(configuration: { serverClientID: string; nonce?: string }, keys: JWTVerifyGetKey = googleKeys) {
   const { serverClientID, nonce } = configuration;
   invariant(clientPattern.test(serverClientID), 503, "configuration", "Configure the central Google Web OAuth client ID.");
