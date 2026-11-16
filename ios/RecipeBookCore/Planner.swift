@@ -94,11 +94,13 @@ public struct StoredPlanResult: Codable, Sendable {
     }
 }
 public struct GeneratedSection: Codable, Sendable {
+    public let bookId: UUID
     public let planId: UUID
     public let weekStart: String
     public let planVersion: Int
     public let items: [GeneratedShoppingItem]
-    public init(planId: UUID, weekStart: String, planVersion: Int, items: [GeneratedShoppingItem]) {
+    public init(bookId: UUID, planId: UUID, weekStart: String, planVersion: Int, items: [GeneratedShoppingItem]) {
+        self.bookId = bookId
         self.planId = planId; self.weekStart = weekStart; self.planVersion = planVersion; self.items = items
     }
 }

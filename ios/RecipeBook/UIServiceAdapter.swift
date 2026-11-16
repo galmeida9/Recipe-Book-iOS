@@ -149,7 +149,13 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
             }
             existing = value
         } else { existing = nil }
-        let saved = try await api.saveRecipe(bookId: bookID, draft: coreDraft(draft), existing: existing)
+        var payload = coreDraft(draft)
+        switch draft.coverImageEdit {
+        case .unchanged: payload.coverImageID = existing?.draft.coverImageID
+        case .remove: payload.coverImageID = nil
+        case .replace(let jpegData): payload.coverImageID = try await api.uploadCover(jpegData)
+        }
+        let saved = try await api.saveRecipe(bookId: bookID, draft: payload, existing: existing)
         recipeCache[saved.id] = saved
         return recipeDetail(saved, authorName: saved.authorId == currentAccount?.id ? currentAccount?.displayName ?? string(saved.authorId) : string(saved.authorId))
     }
@@ -271,6 +277,10 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     func setShoppingItem(_ itemID: ShoppingItemID, bought: Bool, in listID: ShoppingListID) async throws -> RecipeBookPresentation.ShoppingList {
         let value = try await cachedList(listID)
         let uuid = try identifier(itemID)
+        if let section = value.generated?.first(where: { $0.items.contains(where: { $0.id == uuid }) }) {
+            _ = try await api.checkGenerated(bookId: section.bookId, start: section.weekStart, itemId: uuid, bought: bought, version: section.planVersion)
+            return try await shoppingList(id: listID)
+        }
         guard value.items.contains(where: { $0.id == uuid }) else { throw notFound("Shopping item") }
         let items = value.items.map { $0.id == uuid ? RecipeBookCore.ShoppingItem(id: $0.id, ingredient: $0.ingredient, bought: bought) : $0 }
         return try await replaceList(value, items: items)
@@ -358,14 +368,17 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         RecipeBookCore.RecipeDraft(
             title: value.title,
             ingredients: value.ingredients.map { Ingredient(name: $0.name, quantity: $0.quantity, unit: $0.unit, preparation: $0.preparation) },
-            steps: value.steps.map(\.text), servings: value.servings, totalMinutes: value.totalMinutes, sourceURL: value.sourceURL
+            steps: value.steps.map(\.text), servings: value.servings, totalMinutes: value.totalMinutes, sourceURL: value.sourceURL,
+            mealStyle: value.mealStyle.flatMap { RecipeBookCore.MealStyle(rawValue: $0.rawValue) }
         )
     }
     private func recipeDetail(_ value: RecipeBookCore.Recipe, authorName: String) -> RecipeDetail {
         RecipeDetail(
             summary: RecipeSummary(id: string(value.id), bookID: string(value.bookId), title: value.draft.title,
                                    authorID: string(value.authorId), authorName: authorName,
-                                   totalMinutes: value.draft.totalMinutes, servings: value.draft.servings),
+                                   totalMinutes: value.draft.totalMinutes, servings: value.draft.servings,
+                                   mealStyle: value.draft.mealStyle.flatMap { RecipeBookPresentation.MealStyle(rawValue: $0.rawValue) },
+                                   coverImage: value.draft.coverImageID.map { ImageRef(id: string($0)) }, version: value.version),
             ingredients: ingredientLines(value.draft.ingredients, prefix: string(value.id)),
             steps: steps(value.draft.steps, prefix: string(value.id)), sourceURL: value.draft.sourceURL
         )
@@ -373,7 +386,9 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     private func recipeSummary(_ value: RecipeBookCore.Recipe, members: [Membership]) -> RecipeSummary {
         RecipeSummary(id: string(value.id), bookID: string(value.bookId), title: value.draft.title,
                       authorID: string(value.authorId), authorName: members.first(where: { $0.userId == value.authorId })?.displayName ?? string(value.authorId),
-                      totalMinutes: value.draft.totalMinutes, servings: value.draft.servings)
+                      totalMinutes: value.draft.totalMinutes, servings: value.draft.servings,
+                      mealStyle: value.draft.mealStyle.flatMap { RecipeBookPresentation.MealStyle(rawValue: $0.rawValue) },
+                      coverImage: value.draft.coverImageID.map { ImageRef(id: string($0)) }, version: value.version)
     }
     private func ingredientLines(_ values: [Ingredient], prefix: String) -> [IngredientLine] {
         values.enumerated().map { IngredientLine(id: "\(prefix)-ingredient-\($0.offset)", name: $0.element.name,
@@ -389,13 +404,55 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     }
     private func role(_ value: BookRole) -> MemberRole { value == .owner ? .owner : .member }
     private func listSummary(_ value: RecipeBookCore.ShoppingList) -> ShoppingListSummary {
-        ShoppingListSummary(id: string(value.id), name: value.name, remainingCount: value.items.filter { !$0.bought }.count, totalCount: value.items.count)
+        let generated = value.generated?.flatMap(\.items) ?? []
+        return ShoppingListSummary(id: string(value.id), name: value.name, remainingCount: value.items.filter { !$0.bought }.count + generated.filter { !$0.bought }.count, totalCount: value.items.count + generated.count)
     }
     private func presentationList(_ value: RecipeBookCore.ShoppingList) -> RecipeBookPresentation.ShoppingList {
-        RecipeBookPresentation.ShoppingList(id: string(value.id), name: value.name, items: value.items.map {
+        let manual = value.items.map {
             RecipeBookPresentation.ShoppingItem(id: string($0.id), name: $0.ingredient.name, quantity: $0.ingredient.quantity,
                                                unit: $0.ingredient.unit, isBought: $0.bought)
-        })
+        }
+        let generated = (value.generated ?? []).flatMap { section in section.items.map { item in
+            RecipeBookPresentation.ShoppingItem(id: string(item.id), name: item.ingredient.name, quantity: item.ingredient.quantity,
+                unit: item.ingredient.unit, isBought: item.bought,
+                origin: .generated(PlanProvenance(planID: string(section.planId), bookID: string(section.bookId),
+                    weekStart: section.weekStart, planVersion: section.planVersion, recipeTitles: [])))
+        }}
+        return RecipeBookPresentation.ShoppingList(id: string(value.id), name: value.name, items: manual + generated)
+    }
+    func imageData(_ image: ImageRef) async throws -> Data { try await api.coverData(id: identifier(image.id)) }
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> RecipeBookPresentation.WeeklyPlan? {
+        guard let value = try await api.week(bookId: identifier(bookID), start: weekStart) else { return nil }
+        return try await presentationWeek(value)
+    }
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [RecipeBookPresentation.MealStyle?], listID: ShoppingListID, expectedVersion: Int?) async throws -> RecipeBookPresentation.WeeklyPlan {
+        let value = try await api.generateWeek(bookId: identifier(bookID), start: weekStart,
+            styles: dayStyles.map { $0.flatMap { RecipeBookCore.MealStyle(rawValue: $0.rawValue) } },
+            listId: identifier(listID), version: expectedVersion)
+        return try await presentationWeek(value)
+    }
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?, planVersion: Int) async throws -> RecipeBookPresentation.WeeklyPlan {
+        if let replacement, replacement.recipeVersion == nil { throw failure("Reload the replacement recipe before changing the plan.") }
+        let value = try await api.replacePlanDay(bookId: identifier(bookID), start: weekStart, date: date,
+            recipeId: try replacement.map { try identifier($0.recipeID) }, recipeVersion: replacement?.recipeVersion,
+            servings: replacement?.servings, version: planVersion)
+        return try await presentationWeek(value)
+    }
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws {
+        try await api.deleteWeek(bookId: identifier(bookID), start: weekStart, version: planVersion)
+    }
+    private func presentationWeek(_ value: StoredPlanResult) async throws -> RecipeBookPresentation.WeeklyPlan {
+        // Hydrate only current accessible inventory, never stale cache snapshots.
+        let recipes = try await api.recipes(bookId: value.plan.bookId)
+        return RecipeBookPresentation.WeeklyPlan(id: string(value.plan.id), bookID: string(value.plan.bookId),
+            weekStart: value.plan.weekStart, days: value.plan.days.map { day in
+                RecipeBookPresentation.PlanDay(date: day.date, mealStyle: day.mealStyle.flatMap { RecipeBookPresentation.MealStyle(rawValue: $0.rawValue) },
+                    slot: day.slot.map { slot in
+                        let recipe = recipes.first { $0.id == slot.recipeId && $0.version == slot.recipeVersion }
+                        return RecipeBookPresentation.PlanSlot(id: string(slot.id), recipeID: string(slot.recipeId), recipeVersion: slot.recipeVersion,
+                            servings: slot.servings, recipe: recipe.map { recipeSummary($0, members: []) })
+                    })
+            }, version: value.plan.version, warnings: value.warnings.map(\.message), shoppingListID: string(value.listId))
     }
     private func presentationJob(_ value: RecipeBookCore.ImportJob) throws -> RecipeBookPresentation.ImportJob {
         let status: ImportStatus

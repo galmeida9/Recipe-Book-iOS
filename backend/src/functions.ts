@@ -5,19 +5,19 @@ import { AppError, expectedVersion, idSchema, invariant } from "./contracts.js";
 import { RecipeBookService } from "./service.js";
 import { ImportService, importDelivery, failImportDelivery, processImport } from "./imports.js";
 import { enqueueImport } from "./queue.js";
-import { readRecipeImage } from "./images.js";
+import { readRecipeImage, uploadRecipeImage } from "./images.js";
 import { oauthRoute } from "./oauth.js";
 import "./bootstrap.js";
 
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
-async function body(request: HttpRequest): Promise<unknown> {
+async function body(request: HttpRequest, maximum = 300_000): Promise<unknown> {
   invariant(request.headers.get("content-type")?.split(";")[0]?.trim() === "application/json",
     415, "content_type", "Send application/json.");
   const length = request.headers.get("content-length");
-  invariant(length === null || (Number.isFinite(Number(length)) && Number(length) <= 300_000),
+  invariant(length === null || (Number.isFinite(Number(length)) && Number(length) <= maximum),
     413, "request_limit", "Request body exceeded the limit.");
   const text = await request.text();
-  invariant(Buffer.byteLength(text) <= 300_000, 413, "request_limit", "Request body exceeded the limit.");
+  invariant(Buffer.byteLength(text) <= maximum, 413, "request_limit", "Request body exceeded the limit.");
   try { return JSON.parse(text); }
   catch { throw new AppError(400, "invalid_json", "Send a valid JSON object."); }
 }
@@ -112,6 +112,8 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
         result = await imports.approve(id(1), input.bookId, input.draft, version());
       }
     }
+  } else if (path.length === 1 && path[0] === "recipe-images" && method === "POST") {
+    result = await uploadRecipeImage(service, await body(request, 2_800_000));
   } else if (path.length === 2 && path[0] === "recipe-images" && method === "GET") {
     const image = await readRecipeImage(service, id(1));
     return { status: 200, body: image.data, headers: { ...jsonHeaders, "Content-Type": image.contentType } };

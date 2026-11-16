@@ -39,6 +39,51 @@ public actor APIClient {
         try await request("PATCH", "account", body: Setup(displayName: displayName))
     }
     public func books() async throws -> [Book] { try await request("GET", "books") }
+    public func uploadCover(_ data: Data) async throws -> UUID {
+        struct Upload: Encodable { let jpegBase64: String }
+        struct Uploaded: Decodable { let id: UUID }
+        let value: Uploaded = try await request("POST", "recipe-images", body: Upload(jpegBase64: data.base64EncodedString()))
+        return value.id
+    }
+    public func coverData(id: UUID) async throws -> Data {
+        var request = URLRequest(url: baseURL.appendingPathComponent("recipe-images/\(id.uuidString.lowercased())"))
+        request.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+              data.count <= 2_097_152, response.value(forHTTPHeaderField: "Content-Type") == "image/jpeg" else {
+            throw APIError(status: (response as? HTTPURLResponse)?.statusCode ?? 0, code: "image_unavailable", message: "Cover photo is unavailable. Reload the recipe.")
+        }
+        return data
+    }
+    public func week(bookId: UUID, start: String) async throws -> StoredPlanResult? {
+        try await request("GET", planPath(bookId, start))
+    }
+    public func generateWeek(bookId: UUID, start: String, styles: [MealStyle?], listId: UUID, version: Int?) async throws -> StoredPlanResult {
+        struct Input: Encodable { let bookId: UUID; let listId: UUID; let weekStart: String; let dayStyles: [MealStyle?] }
+        return try await request("POST", "plans", body: Input(bookId: bookId, listId: listId, weekStart: start, dayStyles: styles), version: version)
+    }
+    public func replacePlanDay(bookId: UUID, start: String, date: String, recipeId: UUID?, recipeVersion: Int?, servings: Int?, version: Int) async throws -> StoredPlanResult {
+        struct Replacement: Encodable { let recipeId: UUID; let recipeVersion: Int; let servings: Int? }
+        struct Input: Encodable { let date: String; let replacement: Replacement? }
+        var replacement: Replacement?
+        if let recipeId {
+            guard let recipeVersion else { throw APIError(status: 0, code: "recipe_version", message: "Reload the replacement recipe.") }
+            replacement = Replacement(recipeId: recipeId, recipeVersion: recipeVersion, servings: servings)
+        }
+        return try await request("PATCH", planPath(bookId, start), body: Input(date: date, replacement: replacement), version: version)
+    }
+    public func deleteWeek(bookId: UUID, start: String, version: Int) async throws {
+        struct Result: Decodable { let removed: Bool }
+        let _: Result = try await request("DELETE", planPath(bookId, start), version: version)
+    }
+    public func checkGenerated(bookId: UUID, start: String, itemId: UUID, bought: Bool, version: Int) async throws -> StoredPlanResult {
+        struct Input: Encodable { let bought: Bool }
+        return try await request("PATCH", "plans/items/\(itemId.uuidString.lowercased())?bookId=\(bookId.uuidString.lowercased())&weekStart=\(start)", body: Input(bought: bought), version: version)
+    }
+    private func planPath(_ bookId: UUID, _ start: String) throws -> String {
+        _ = try CookingPlanner.weekDates(start)
+        return "plans?bookId=\(bookId.uuidString.lowercased())&weekStart=\(start)"
+    }
     public func createBook(name: String, kind: BookKind) async throws -> Book {
         try await request("POST", "books", body: CreateBook(name: name, kind: kind))
     }
@@ -123,7 +168,11 @@ public actor APIClient {
     }
 
     private func request<T: Decodable, Body: Encodable>(_ method: String, _ path: String, body: Body?, version: Int? = nil, idempotencyKey: UUID? = nil, expectedAccountID: UUID? = nil) async throws -> T {
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        var components = URLComponents(url: baseURL.appendingPathComponent(String(parts[0])), resolvingAgainstBaseURL: false)!
+        if parts.count == 2 { components.percentEncodedQuery = String(parts[1]) }
+        guard let url = components.url else { throw APIError(status: 0, code: "configuration", message: "Invalid API request URL.") }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

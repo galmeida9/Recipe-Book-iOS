@@ -3,15 +3,69 @@ import { DefaultAzureCredential } from "@azure/identity";
 import { invariant, requiredSetting } from "./contracts.js";
 import { query } from "./database.js";
 import { bookAccess, RecipeBookService } from "./service.js";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+
+export function validateCoverJPEG(data: Buffer): void {
+  invariant(data.length >= 12 && data.length <= 2_097_152 && data[0] === 0xff && data[1] === 0xd8 &&
+    data[data.length - 2] === 0xff && data[data.length - 1] === 0xd9, 400, "invalid_cover", "Choose a JPEG up to 2 MiB and 1600 pixels per side.");
+  let offset = 2;
+  while (offset + 4 <= data.length) {
+    invariant(data[offset] === 0xff, 400, "invalid_cover", "Invalid JPEG marker.");
+    while (data[offset] === 0xff) offset++;
+    const marker = data[offset++]!;
+    if (marker === 0xda || marker === 0xd9) break;
+    invariant(offset + 2 <= data.length, 400, "invalid_cover", "Truncated JPEG.");
+    const length = data.readUInt16BE(offset);
+    invariant(length >= 2 && offset + length <= data.length, 400, "invalid_cover", "Invalid JPEG segment.");
+    if ([0xc0, 0xc1, 0xc2].includes(marker)) {
+      invariant(length >= 8 && data[offset + 2] === 8 &&
+        data.readUInt16BE(offset + 3) > 0 && data.readUInt16BE(offset + 3) <= 1600 &&
+        data.readUInt16BE(offset + 5) > 0 && data.readUInt16BE(offset + 5) <= 1600,
+      400, "invalid_cover", "Cover photos must be at most 1600 pixels per side.");
+      return;
+    }
+    offset += length;
+  }
+  invariant(false, 400, "invalid_cover", "JPEG dimensions were not supported.");
+}
+function privateBlobs() {
+  const endpoint = new URL(requiredSetting("BLOB_SERVICE_URL"));
+  invariant(endpoint.protocol === "https:" && endpoint.hostname.endsWith(".blob.core.windows.net") &&
+    !endpoint.search && !endpoint.username && !endpoint.password, 503, "configuration", "A private Azure Blob endpoint is required.");
+  return new BlobServiceClient(endpoint.toString(), new DefaultAzureCredential()).getContainerClient("recipe-images");
+}
+export async function uploadRecipeImage(service: RecipeBookService, input: unknown) {
+  const { jpegBase64 } = z.object({ jpegBase64: z.string().max(2_796_204) }).strict().parse(input);
+  const data = Buffer.from(jpegBase64, "base64");
+  invariant(data.toString("base64") === jpegBase64, 400, "invalid_cover", "Send canonical JPEG base64.");
+  validateCoverJPEG(data);
+  return service.execute(async (transaction, userId) => {
+    const limits = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.RecipeImages WITH(UPDLOCK,HOLDLOCK) WHERE OwnerId=@userId", { userId });
+    invariant(limits[0]!.count < 500, 409, "image_limit", "This account has reached its cover-photo limit.");
+    const id = randomUUID();
+    const blobName = "covers/" + id + ".jpg";
+    await privateBlobs().getBlockBlobClient(blobName).uploadData(data, { blobHTTPHeaders: { blobContentType: "image/jpeg" }, conditions: { ifNoneMatch: "*" } });
+    await query(transaction, "INSERT dbo.RecipeImages(Id,RecipeId,OwnerId,BlobName,ContentType,SizeBytes) VALUES(@id,NULL,@userId,@blobName,'image/jpeg',@size)",
+      { id, userId, blobName, size: data.length });
+    return { id };
+  });
+}
 
 export async function readRecipeImage(service: RecipeBookService, id: string) {
   return service.execute(async (transaction, userId) => {
-    const images = await query<{ bookId: string; blobName: string; contentType: string; size: number }>(transaction, `
-      SELECT CONVERT(varchar(36),r.BookId) AS bookId,i.BlobName AS blobName,i.ContentType AS contentType,i.SizeBytes AS size
-      FROM dbo.RecipeImages i JOIN dbo.Recipes r ON r.Id=i.RecipeId WHERE i.Id=@id`, { id });
+    const images = await query<{ bookId: string | null; ownerId: string | null; currentCover: string | null; blobName: string; contentType: string; size: number }>(transaction, `
+      SELECT CONVERT(varchar(36),r.BookId) AS bookId,JSON_VALUE(r.Draft,'$.coverImageID') AS currentCover,
+      CONVERT(varchar(36),i.OwnerId) AS ownerId,i.BlobName AS blobName,i.ContentType AS contentType,i.SizeBytes AS size
+      FROM dbo.RecipeImages i LEFT JOIN dbo.Recipes r ON r.Id=i.RecipeId
+      WHERE i.Id=@id`, { id });
     invariant(images[0], 404, "image_not_found", "Image not found.");
     const image = images[0];
-    await bookAccess(transaction, image.bookId, userId);
+    if (image.bookId) {
+      await bookAccess(transaction, image.bookId, userId);
+      invariant(image.currentCover?.toLowerCase() === id.toLowerCase(), 404, "image_not_found", "Image not found.");
+    }
+    else invariant(image.ownerId?.toLowerCase() === userId, 404, "image_not_found", "Image not found.");
     const endpoint = new URL(requiredSetting("BLOB_SERVICE_URL"));
     invariant(endpoint.protocol === "https:" && endpoint.hostname.endsWith(".blob.core.windows.net")
       && !endpoint.search && !endpoint.username && !endpoint.password,

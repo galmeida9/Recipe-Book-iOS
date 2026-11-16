@@ -80,6 +80,13 @@ async function createStoredBook(transaction: sql.Transaction, userId: string, bo
   await query(transaction, "INSERT dbo.Memberships(BookId,UserId,Role) VALUES(@id,@userId,'owner')", { id, userId });
   return { id, ...body, role: "owner", version: 1 };
 }
+async function bindCover(transaction: sql.Transaction, userId: string, recipeId: string, imageId: string | null) {
+  if (!imageId) return;
+  const rows = await query(transaction, `UPDATE dbo.RecipeImages WITH(UPDLOCK,HOLDLOCK) SET RecipeId=@recipeId
+    OUTPUT inserted.Id WHERE Id=@imageId AND ((RecipeId IS NULL AND OwnerId=@userId) OR RecipeId=@recipeId)`,
+  { userId, recipeId, imageId });
+  invariant(rows.length === 1, 403, "image_owner", "Choose a photo uploaded for this recipe by your account.");
+}
 export class RecipeBookService {
   constructor(private readonly principal: Principal) {}
   async execute<T>(work: (transaction: sql.Transaction, userId: string) => Promise<T>): Promise<T> {
@@ -145,6 +152,7 @@ export class RecipeBookService {
       }
       const book = await createStoredBook(transaction, userId, { name: body.name, kind: body.kind });
       for (const draft of body.recipes) {
+        invariant(!draft.coverImageID, 400, "copy_image", "Local photos must be copied through the dedicated image upload flow.");
         await query(transaction, "INSERT dbo.Recipes(Id,BookId,AuthorId,Draft) VALUES(@id,@bookId,@userId,@draft)",
           { id: randomUUID(), bookId: book.id, userId, draft: JSON.stringify(draft) });
       }
@@ -250,6 +258,7 @@ export class RecipeBookService {
         const existing = await getRecipe(transaction, bookId, id);
         invariant(canEditRecipe(book.role, userId, existing.authorId), 403, "recipe_author", "Only the contributor or a book owner can edit this recipe.");
         assertVersion(existing.version, version!);
+        await bindCover(transaction, userId, id, draft.coverImageID);
         await query(transaction, "UPDATE dbo.Recipes SET Draft=@draft,Version=Version+1 WHERE Id=@id", { id, draft: JSON.stringify(draft) });
         return { ...existing, draft, version: existing.version + 1 };
       }
@@ -259,6 +268,7 @@ export class RecipeBookService {
       const recipeId = randomUUID();
       await query(transaction, "INSERT dbo.Recipes(Id,BookId,AuthorId,Draft) VALUES(@id,@bookId,@userId,@draft)",
         { id: recipeId, bookId, userId, draft: JSON.stringify(draft) });
+      await bindCover(transaction, userId, recipeId, draft.coverImageID);
       return { id: recipeId, bookId, authorId: userId, draft, version: 1 };
     });
   }

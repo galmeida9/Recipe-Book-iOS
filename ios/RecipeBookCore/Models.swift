@@ -43,14 +43,19 @@ public struct RecipeDraft: Codable, Sendable {
     public var servings: Int?
     public var totalMinutes: Int?
     public var sourceURL: URL?
+    public var mealStyle: MealStyle?
+    public var coverImageID: UUID?
 
-    public init(title: String, ingredients: [Ingredient], steps: [String], servings: Int? = nil, totalMinutes: Int? = nil, sourceURL: URL? = nil) {
+    public init(title: String, ingredients: [Ingredient], steps: [String], servings: Int? = nil, totalMinutes: Int? = nil, sourceURL: URL? = nil,
+                mealStyle: MealStyle? = nil, coverImageID: UUID? = nil) {
         self.title = title
         self.ingredients = ingredients
         self.steps = steps
         self.servings = servings
         self.totalMinutes = totalMinutes
         self.sourceURL = sourceURL
+        self.mealStyle = mealStyle
+        self.coverImageID = coverImageID
     }
 }
 
@@ -97,6 +102,7 @@ public struct ShoppingList: Codable, Identifiable, Sendable {
     public let name: String
     public let items: [ShoppingItem]
     public let version: Int
+    public var generated: [GeneratedSection]?
 }
 
 public struct SessionAccount: Codable, Sendable {
