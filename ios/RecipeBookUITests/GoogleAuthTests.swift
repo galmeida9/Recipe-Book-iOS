@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import RecipeBookAuth
 import RecipeBookCore
+import RecipeBookSharedAuth
 @preconcurrency import AppAuthCore
 
 private final class TokenTransportFixture: URLProtocol, @unchecked Sendable {
@@ -74,8 +75,8 @@ final class GoogleAuthTests: XCTestCase {
     func testLiveOwnedTokenEndpointRejectsInertCodeThroughActualAppAuthTransport() async throws {
         let previous = OIDURLSessionProvider.session()
         defer { OIDURLSessionProvider.setSession(previous) }
-        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: false)
-        let session = URLSession(configuration: configuration)
+        // Exercise the same SDK default session as the known-working login.
+        let session = URLSession.shared
         OIDURLSessionProvider.setSession(session)
         let base = URL(string: "https://recipe-api-nb2yqx3agzmou.azurewebsites.net/api/")!
         let config = try GoogleAuthConfiguration(apiBaseURL: base)
@@ -90,6 +91,13 @@ final class GoogleAuthTests: XCTestCase {
         let failure: NSError = await withCheckedContinuation { continuation in
             OIDAuthorizationService.perform(request) { _, error in
                 continuation.resume(returning: (error as NSError?) ?? NSError(domain: "SyntheticUnexpectedSuccess", code: 0))
+            }
+            func testMainAppSharedCredentialSetupDoesNotReplaceTheWorkingAppAuthSDKSession() {
+                let previous = OIDURLSessionProvider.session()
+                defer { OIDURLSessionProvider.setSession(previous) }
+                OIDURLSessionProvider.setSession(URLSession.shared)
+                SharedGoogleSession.configureNetworking()
+                XCTAssertTrue(OIDURLSessionProvider.session() === URLSession.shared)
             }
         }
         XCTAssertEqual(failure.domain, OIDOAuthTokenErrorDomain, "Actual iOS transport must receive the OAuth response, not time out.")

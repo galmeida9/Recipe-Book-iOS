@@ -15,7 +15,10 @@ public final class SharedGoogleSession: AccessTokenProvider {
 
     public static func configureNetworking() {
         guard !networkConfigured else { return }
-        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: Bundle.main.bundleURL.pathExtension == "appex")
+        // Interactive Google login worked with AppAuth's own shared session.
+        // Only the separate extension process needs a short refresh deadline.
+        guard Bundle.main.bundleURL.pathExtension == "appex" else { return }
+        let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: true)
         OIDURLSessionProvider.setSession(URLSession(configuration: configuration))
         networkConfigured = true
     }
