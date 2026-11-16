@@ -36,6 +36,7 @@ export interface ShoppingList { id: string; name: string; items: ShoppingItem[];
 export interface Evidence {
   caption: string | null; comments: string[]; transcript: string | null;
   warnings?: string[] | undefined; extraction?: ExtractedRecipe | undefined; sources?: ExtractionSource[] | undefined;
+  modelExecution?: { provider: "gemini-free"; model: string; requestId: string | null; inputTokens: number | null; outputTokens: number | null } | undefined;
 }
 export type ImportState = "queued" | "running" | "review" | "failed" | "completed" | "discarded";
 export interface ImportJob {
@@ -49,6 +50,9 @@ export interface ImportJob {
   createdAt: string;
   recipeId: string | null;
   bookId: string | null;
+  destinationBookId: string | null;
+  stage: "queued" | "metadata" | "audio" | "model" | "review" | "failed" | "completed" | "discarded";
+  isUnseen: boolean;
 }
 export interface Principal { issuer: string; subject: string }
 

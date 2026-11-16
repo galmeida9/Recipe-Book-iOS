@@ -4,13 +4,15 @@ import { ApifyProvider, runSchema, type ProviderRun } from "./apify.js";
 import { canonicalReelURL, invariant, requiredSetting, type Evidence } from "./contracts.js";
 import { evidenceSchema } from "./import-evidence.js";
 import { extractionInput, extractionJSONSchema, extractionRules, validateExtraction } from "./recipe-extraction.js";
+import { approvedGemini, GeminiExtractor } from "./gemini.js";
 
 export const pipelineSchema = z.object({
   stage: z.enum(["metadata", "audio", "model"]),
   evidence: evidenceSchema.nullable(),
   thumbnailURL: z.string().max(8192).nullable().default(null),
   configuration: z.string().regex(/^[a-f0-9]{64}$/),
-  runs: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)).max(3)
+  runs: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)).max(3),
+  resumedFrom: z.string().uuid().optional()
 }).strict();
 export type Pipeline = z.infer<typeof pipelineSchema>;
 const configuration = () => createHash("sha256").update(JSON.stringify(approvedPipeline())).digest("hex");
@@ -24,8 +26,12 @@ export function reviewedPipeline() {
   invariant(["APIFY_FREE_PLAN_VERIFIED", "APIFY_NO_OVERAGES_VERIFIED", "APIFY_BACKEND_LEDGER_VERIFIED",
     "APIFY_PIPELINE_REVIEW_ACKNOWLEDGED", "APIFY_PIPELINE_PRICING_VERIFIED"].every(name => process.env[name] === "true"),
   503, "provider_not_approved", "Instagram imports are disabled until account limits and pricing are verified and the operator acknowledges the provider/data review.");
+  const modelProvider = process.env["MODEL_PROVIDER"] ?? "apify";
+  invariant(["apify", "gemini-free"].includes(modelProvider), 503, "configuration", "Select an explicitly reviewed model provider.");
+  if (modelProvider === "gemini-free") approvedGemini();
   const stages = Object.fromEntries(Object.keys(stageActors).map(key => {
     const stage = key as keyof typeof stageActors;
+    if (stage === "model" && modelProvider === "gemini-free") return [stage, { actor: "gemini-free", build: "gemini-2.5-flash-lite", cap: 0 }];
     const build = requiredSetting(`APIFY_${stage.toUpperCase()}_BUILD`);
     const cap = Number(requiredSetting(`APIFY_${stage.toUpperCase()}_CAP_MICROS`));
     invariant(/^\d+\.\d+\.\d+$/.test(build) && Number.isSafeInteger(cap) && cap > 0 && cap <= 1_000_000,
@@ -34,7 +40,7 @@ export function reviewedPipeline() {
   })) as Record<Pipeline["stage"], { actor: string; build: string; cap: number }>;
   const reserveMicros = stages.metadata.cap + stages.audio.cap + stages.model.cap;
   invariant(reserveMicros <= 1_000_000, 503, "configuration", "The entire three-stage import must be capped at USD 1 or less.");
-  return { stages, reserveMicros };
+  return { stages, reserveMicros, modelProvider };
 }
 export function approvedPipeline() {
   invariant(process.env["APIFY_ENABLED"] === "true", 503, "provider_not_approved", "Instagram imports are disabled.");
@@ -47,14 +53,21 @@ export class ImportPipelineProvider extends ApifyProvider {
     const config = reviewedPipeline();
     const accessible: string[] = [];
     for (const stage of Object.values(config.stages)) {
+      if (stage.actor === "gemini-free") continue;
       z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })).max(1) }) })
         .parse(await this.request(`actors/${stage.actor}/runs?limit=1&desc=true`));
       accessible.push(stage.actor);
     }
     return accessible;
   }
+  async extractDirect(sourceURL: string, pipeline: Pipeline) {
+    invariant(reviewedPipeline().modelProvider === "gemini-free", 503, "configuration", "A reviewed direct free model is not selected.");
+    invariant(pipeline.configuration === configuration() && pipeline.evidence, 503, "provider_changed", "The reviewed model configuration or cached evidence changed.");
+    return new GeminiExtractor().extract(sourceURL, pipeline.evidence);
+  }
   async startStage(sourceURL: string, pipeline: Pipeline, reservation: number): Promise<ProviderRun> {
     const config = approvedPipeline();
+    invariant(pipeline.stage !== "model" || config.modelProvider === "apify", 503, "configuration", "The direct free model is not an Apify actor run.");
     invariant(pipeline.configuration === configuration(), 503, "provider_changed", "The reviewed provider configuration changed; no new stage was charged.");
     invariant(reservation === config.reserveMicros, 503, "provider_changed", "The approved import spending cap changed.");
     const source = canonicalReelURL(sourceURL);
@@ -126,6 +139,10 @@ export class ImportPipelineProvider extends ApifyProvider {
       // Only text, not video duration/ASR offsets, is passed to the model.
       extractionInput(sourceURL, evidence);
       return { next: { ...pipeline, stage: "model", evidence }, evidence, review: null };
+    }
+    if (typeof item["error"] === "string" && item["error"].includes('"actor-restricted-access-permission-mode-not-supported"')) {
+      invariant(false, 502, "provider_model_unavailable",
+        "The model provider does not support the restricted runtime token. No recipe was generated and no automatic paid retry was made.");
     }
     invariant(item["model"] === "google/gemini-2.5-flash-lite" && item["error"] == null &&
       Array.isArray(item["tools_used"]) && item["tools_used"].length === 0 &&

@@ -92,6 +92,9 @@ public struct ImportJob: Codable, Identifiable, Sendable {
     public let createdAt: String
     public let recipeId: UUID?
     public let bookId: UUID?
+    public let destinationBookId: UUID?
+    public let stage: String?
+    public let isUnseen: Bool?
 }
 
 public struct ShoppingItem: Codable, Identifiable, Sendable {

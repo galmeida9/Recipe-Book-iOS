@@ -108,6 +108,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   const budgetMonth = "t" + randomUUID().slice(0, 6);
   const retryBudgetMonth = "r" + randomUUID().slice(0, 6);
   const ambiguousBudgetMonth = "a" + randomUUID().slice(0, 6);
+  const revokedBudgetMonth = "v" + randomUUID().slice(0, 6);
   let activeBudgetMonth = budgetMonth;
   let starts = 0;
   let succeeded = false;
@@ -227,13 +228,20 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     const imports = new ImportService(alice, provider);
     const outsiderImports = new ImportService(outsider, provider);
     const key = randomUUID();
-    const importJob = await imports.create({ sourceURL: "https://instagram.com/reel/Fixture1/?tracking=1" }, key);
-    const duplicate = await imports.create({ sourceURL: "https://www.instagram.com/reel/Fixture1/" }, randomUUID());
+    const createImport = (sourceURL: string, requestKey = randomUUID()) => imports.create({ sourceURL, bookId: shared.id }, requestKey);
+    const importJob = await createImport("https://instagram.com/reel/Fixture1/?tracking=1", key);
+    const duplicate = await createImport("https://www.instagram.com/reel/Fixture1/");
     assert.equal(importJob.id, duplicate.id);
-    await assert.rejects(() => imports.create({ sourceURL: "https://www.instagram.com/reel/Different/" }, key),
+    await assert.rejects(() => imports.create({ sourceURL: importJob.sourceURL, bookId: privateBook.id }, key),
+      (error: unknown) => error instanceof AppError && error.code === "idempotency_conflict");
+    await assert.rejects(() => outsiderImports.create({ sourceURL: importJob.sourceURL, bookId: shared.id }, randomUUID()),
+      (error: unknown) => error instanceof AppError && error.code === "book_not_found");
+    await assert.rejects(() => imports.create({ sourceURL: importJob.sourceURL, bookId: shared.id }, randomUUID(), bobId),
+      (error: unknown) => error instanceof AppError && error.code === "account_changed");
+    await assert.rejects(() => createImport("https://www.instagram.com/reel/Different/", key),
       (error: unknown) => error instanceof AppError && error.code === "idempotency_conflict");
     await assert.rejects(() => outsiderImports.get(importJob.id), (error: unknown) => error instanceof AppError && error.code === "import_not_found");
-    const secondJob = await imports.create({ sourceURL: "https://www.instagram.com/reel/Fixture2/" }, randomUUID());
+    const secondJob = await createImport("https://www.instagram.com/reel/Fixture2/");
     await Promise.all([processImport(importJob.id, provider), processImport(importJob.id, provider)]);
     assert.equal(starts, 1, "Concurrent delivery must perform one charged dispatch.");
     assert.equal((await imports.get(importJob.id)).state, "running");
@@ -241,12 +249,18 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     for (let stage = 0; stage < 5; stage++) await Promise.all([processImport(importJob.id, provider), processImport(importJob.id, provider)]);
     const review = await imports.get(importJob.id);
     assert.equal(review.state, "review");
+    assert.equal(review.destinationBookId, shared.id);
+    assert.equal(review.isUnseen, true);
+    assert.equal((await imports.markSeen(review.id, review.version)).isUnseen, false);
+    assert.equal((await imports.markSeen(review.id, review.version)).isUnseen, false, "Seen acknowledgement is persisted and idempotent.");
+    await assert.rejects(() => imports.approve(importJob.id, privateBook.id, review.draft, review.version),
+      (error: unknown) => error instanceof AppError && error.code === "destination_changed");
     assert.equal(review.draft!.ingredients[0]!.quantity, "100");
     const approved = await imports.approve(importJob.id, shared.id, review.draft, review.version);
     assert.equal((await imports.get(importJob.id)).recipeId, approved.id);
-    assert.equal((await imports.create({ sourceURL: "https://www.instagram.com/reel/Fixture1/" }, key)).state, "completed");
+    assert.equal((await createImport("https://www.instagram.com/reel/Fixture1/", key)).state, "completed");
     assert.equal(starts, 3, "Concurrent stage transitions never duplicate a charged POST.");
-    await assert.rejects(() => imports.create({ sourceURL: "https://www.instagram.com/reel/Fixture3/" }, randomUUID()),
+    await assert.rejects(() => createImport("https://www.instagram.com/reel/Fixture3/"),
       (error: unknown) => error instanceof AppError && error.code === "budget_exhausted");
     await serializable(async transaction => {
       await query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
@@ -275,7 +289,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     assert.equal(starts, 4);
     for (let stage = 0; stage < 5; stage++) await processImport(secondJob.id, provider, retryDelivery.deadline);
     assert.equal((await imports.get(secondJob.id)).state, "review");
-    const undelivered = await imports.create({ sourceURL: "https://www.instagram.com/reel/Undelivered/" }, randomUUID());
+    const undelivered = await createImport("https://www.instagram.com/reel/Undelivered/");
     await serializable(transaction => query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
       { id: undelivered.id, deadline: new Date(Date.now() - 1000) }));
     assert.equal((await imports.get(undelivered.id)).state, "failed", "An expired queue message must not leave a job queued forever.");
@@ -284,7 +298,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       "SELECT SpentMicros AS spent,ReservedMicros AS reserved FROM dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth }));
     assert.deepEqual(retryBudget[0], { spent: 200_000, reserved: 0 });
     activeBudgetMonth = ambiguousBudgetMonth;
-    const ambiguous = await imports.create({ sourceURL: "https://www.instagram.com/reel/AmbiguousAudio/" }, randomUUID());
+    const ambiguous = await createImport("https://www.instagram.com/reel/AmbiguousAudio/");
     await processImport(ambiguous.id, provider);
     await processImport(ambiguous.id, provider);
     lostResponse = true;
@@ -297,7 +311,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     await assert.rejects(() => imports.retry(ambiguous.id, ambiguousFailure.version),
       (error: unknown) => error instanceof AppError && error.code === "retry_unsafe");
     assert.equal(starts, chargedStarts, "A lost second-stage POST is never charged again.");
-    const betweenStages = await imports.create({ sourceURL: "https://www.instagram.com/reel/ExpiredBetweenStages/" }, randomUUID());
+    const betweenStages = await createImport("https://www.instagram.com/reel/ExpiredBetweenStages/");
     await processImport(betweenStages.id, provider);
     await processImport(betweenStages.id, provider);
     await serializable(transaction => query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
@@ -305,6 +319,21 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     const expiredBetweenStages = await imports.get(betweenStages.id);
     await assert.rejects(() => imports.retry(betweenStages.id, expiredBetweenStages.version),
       (error: unknown) => error instanceof AppError && error.code === "retry_unsafe");
+    activeBudgetMonth = revokedBudgetMonth;
+    const bobImports = new ImportService(bob, provider);
+    const revokedJob = await bobImports.create({ sourceURL: "https://www.instagram.com/reel/RevokedBook/", bookId: shared.id }, randomUUID());
+    const beforeRevocationStarts = starts;
+    await alice.changeMember(shared.id, bobId, null, shared.version);
+    shared = (await alice.books()).find(book => book.id === shared.id)!;
+    await assert.rejects(() => bobImports.get(revokedJob.id),
+      (error: unknown) => error instanceof AppError && error.code === "book_not_found");
+    assert.equal((await bobImports.list()).length, 0, "Revoked book jobs do not leak through the global list.");
+    await processImport(revokedJob.id, provider);
+    assert.equal(starts, beforeRevocationStarts, "Revoked destination membership prevents the next charged stage.");
+    const revokedState = await serializable(transaction => query<{ state: string }>(transaction,
+      "SELECT State AS state FROM dbo.ImportJobs WHERE Id=@id", { id: revokedJob.id }));
+    assert.equal(revokedState[0]!.state, "failed");
+    shared = await alice.addMember(shared.id, bobId, shared.version);
     const promoted = await alice.changeMember(shared.id, bobId, "owner", shared.version);
     assert.ok("version" in promoted);
     shared = (await alice.books()).find(book => book.id === shared.id)!;
@@ -337,6 +366,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: budgetMonth });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: ambiguousBudgetMonth });
+      await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: revokedBudgetMonth });
       await query(transaction, "DELETE dbo.Accounts WHERE Issuer=@issuer", { issuer });
       await query(transaction, "DELETE dbo.AccessInvites WHERE Issuer=@issuer", { issuer });
     });

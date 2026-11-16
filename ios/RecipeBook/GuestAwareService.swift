@@ -253,6 +253,13 @@ actor GuestAwareService: RecipeBookService {
     func submitImport(url: URL) async throws -> RecipeBookPresentation.ImportJob {
         try await withCloud(.importing) { try await $0.submitImport(url: url) }
     }
+    func submitImport(url: URL, bookID: BookID) async throws -> RecipeBookPresentation.ImportJob {
+        guard !GuestStore.isLocal(bookID) else { throw RecipeBookUIError.signInRequired(.importing) }
+        return try await withCloud(.importing) { try await $0.submitImport(url: url, bookID: bookID) }
+    }
+    func markImportSeen(id: ImportJobID) async throws {
+        try await withCloud(.importing) { try await $0.markImportSeen(id: id) }
+    }
     func importReview(id: ImportJobID) async throws -> RecipeBookPresentation.RecipeDraft {
         try await withCloud(.importing) { try await $0.importReview(id: id) }
     }

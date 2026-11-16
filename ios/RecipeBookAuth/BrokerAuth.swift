@@ -4,6 +4,7 @@ import UIKit
 import Security
 @preconcurrency import AppAuth
 import RecipeBookCore
+import RecipeBookSharedAuth
 
 public protocol AuthenticationSession: AccessTokenProvider {
     func hasSession() async -> Bool
@@ -225,6 +226,7 @@ private final class AppAuthDriver: GoogleSessionDriver {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw APIError(status: 0, code: "keychain", message: "Unable to clear secure sign-in storage.")
         }
+        try SharedGoogleSession(baseURL: configuration.apiBaseURL).clear()
     }
     private func snapshot(_ state: OIDAuthState) throws -> GoogleCredential {
         guard let token = state.lastTokenResponse?.idToken, let parsed = OIDIDToken(idTokenString: token) else {
@@ -246,6 +248,7 @@ private final class AppAuthDriver: GoogleSessionDriver {
         } else if status != errSecSuccess {
             throw APIError(status: 0, code: "keychain", message: "Unable to update secure Google sign-in storage.")
         }
+        try SharedGoogleSession(baseURL: configuration.apiBaseURL).save(state)
     }
 }
 #endif

@@ -106,10 +106,11 @@ export async function dispatch(request: HttpRequest, service: RecipeBookService,
     }
   } else if (path[0] === "imports") {
     if (path.length === 1) {
-      if (method === "GET") result = await imports.list();
+      if (method === "GET") result = await imports.list(request.query.has("bookId") ? idSchema.parse(request.query.get("bookId")) : undefined);
       else if (method === "POST") {
         const key = idSchema.parse(request.headers.get("idempotency-key"));
-        const job = await imports.create(await body(request), key);
+        const job = await imports.create(await body(request), key,
+          request.headers.has("x-recipe-account-id") ? idSchema.parse(request.headers.get("x-recipe-account-id")) : undefined);
         if (["queued", "running"].includes(job.state)) {
           try {
             const delivery = await importDelivery(job.id);
@@ -125,7 +126,8 @@ export async function dispatch(request: HttpRequest, service: RecipeBookService,
       if (method === "GET") result = await imports.get(id(1));
       else if (method === "DELETE") result = await imports.discard(id(1), version());
     } else if (path.length === 3 && method === "POST") {
-      if (path[2] === "retry") {
+      if (path[2] === "seen") result = await imports.markSeen(id(1), version());
+      else if (path[2] === "retry") {
         const job = await imports.retry(id(1), version());
         const delivery = await importDelivery(job.id);
         if (delivery) await enqueueImport(delivery);

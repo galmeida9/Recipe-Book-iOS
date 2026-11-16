@@ -47,6 +47,13 @@ targets:
     sources: [RecipeBookShare]
     dependencies:
       - package: RecipeBookCore
+        product: RecipeBookCore
+      - package: RecipeBookCore
+        product: RecipeBookSharedAuth
+      - package: RecipeBookUI
+        product: RecipeBookPresentation
+      - package: RecipeBookUI
+        product: RecipeBookUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.recipebook.app.share

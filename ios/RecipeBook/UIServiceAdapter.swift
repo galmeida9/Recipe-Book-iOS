@@ -199,24 +199,30 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         return try presentationJob(value)
     }
     func submitImport(url: URL) async throws -> RecipeBookPresentation.ImportJob {
+        throw failure("Choose a recipe book before importing.")
+    }
+    func submitImport(url: URL, bookID: BookID) async throws -> RecipeBookPresentation.ImportJob {
         guard let canonical = ReelURL.canonicalize(url) else { throw failure("Share or paste an HTTPS Instagram Reel link.") }
-        let pending = try inbox.pending().filter { $0.url == canonical }
-        let key = importKeys[canonical] ?? pending.first.flatMap { UUID(uuidString: $0.id) } ?? UUID()
-        importKeys[canonical] = key
-        let value = try await api.importReel(url: canonical, idempotencyKey: key)
+        let owner = try await api.account()
+        let destination = try identifier(bookID)
+        let key = try ImportRequestIdentity.key(accountID: owner.id, bookID: destination, sourceURL: canonical)
+        let value = try await api.importReel(url: canonical, bookId: destination, idempotencyKey: key, expectedAccountID: owner.id)
         jobCache[value.id] = value
         let result = try presentationJob(value)
-        // Only a committed server job acknowledges the share files. Cancellation
-        // and provider errors retain them for explicit retry.
-        for entry in pending { try inbox.acknowledge(id: entry.id) }
         return result
+    }
+    func markImportSeen(id: ImportJobID) async throws {
+        let uuid = try identifier(id)
+        let current = try await api.importJob(id: uuid)
+        let updated = try await api.markImportSeen(current)
+        jobCache[uuid] = updated
     }
     func importReview(id: ImportJobID) async throws -> RecipeBookPresentation.RecipeDraft {
         let value = try await api.importJob(id: identifier(id))
         jobCache[value.id] = value
         guard value.state == .review, let draft = value.draft else { throw failure("This import is not ready for review.") }
         return RecipeBookPresentation.RecipeDraft(
-            title: draft.title, servings: draft.servings, totalMinutes: draft.totalMinutes,
+            bookID: value.destinationBookId.map(string), title: draft.title, servings: draft.servings, totalMinutes: draft.totalMinutes,
             ingredients: ingredientLines(draft.ingredients, prefix: string(value.id)),
             steps: steps(draft.steps, prefix: string(value.id)), sourceURL: draft.sourceURL,
             evidenceText: value.evidence.map { evidence in
@@ -491,7 +497,16 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         }
         guard let date = ISO8601DateFormatter().date(from: value.createdAt)
             ?? Self.fractionalDate(value.createdAt) else { throw failure("Import timestamp is invalid.") }
-        return RecipeBookPresentation.ImportJob(id: string(value.id), sourceURL: value.sourceURL, status: status, createdAt: date, titleHint: value.draft?.title)
+        let stageText: String?
+        switch value.stage {
+        case "metadata": stageText = "Reading caption and available comments"
+        case "audio": stageText = "Transcribing audio"
+        case "model": stageText = "Preparing an editable recipe"
+        default: stageText = nil
+        }
+        return RecipeBookPresentation.ImportJob(id: string(value.id), sourceURL: value.sourceURL, status: status, createdAt: date,
+            titleHint: value.draft?.title, bookID: value.destinationBookId.map(string), stageDetail: stageText,
+            thumbnail: value.draft?.coverImageID.map { ImageRef(id: string($0)) }, isUnseen: value.isUnseen ?? false)
     }
     private static func fractionalDate(_ text: String) -> Date? {
         let formatter = ISO8601DateFormatter()

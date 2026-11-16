@@ -140,11 +140,15 @@ public actor APIClient {
     public func suggestions(have: [String] = []) async throws -> [Recipe] {
         try await request("POST", "suggestions", body: Suggest(have: have))
     }
-    public func importReel(url: URL, idempotencyKey: UUID) async throws -> ImportJob {
-        try await request("POST", "imports", body: CreateImport(sourceURL: url), idempotencyKey: idempotencyKey)
+    public func importReel(url: URL, bookId: UUID, idempotencyKey: UUID, expectedAccountID: UUID) async throws -> ImportJob {
+        try await request("POST", "imports", body: CreateImport(sourceURL: url, bookId: bookId),
+                          idempotencyKey: idempotencyKey, expectedAccountID: expectedAccountID)
     }
     public func importJob(id: UUID) async throws -> ImportJob { try await request("GET", "imports/\(id)") }
     public func importJobs() async throws -> [ImportJob] { try await request("GET", "imports") }
+    public func markImportSeen(_ job: ImportJob) async throws -> ImportJob {
+        try await request("POST", "imports/\(job.id)/seen", version: job.version)
+    }
     public func retryImport(_ job: ImportJob) async throws -> ImportJob {
         try await request("POST", "imports/\(job.id)/retry", version: job.version)
     }
@@ -173,7 +177,7 @@ public actor APIClient {
     private struct Suggest: Encodable { let have: [String] }
     private struct AddMember: Encodable { let userId: UUID }
     private struct ChangeRole: Encodable { let role: BookRole }
-    private struct CreateImport: Encodable { let sourceURL: URL }
+    private struct CreateImport: Encodable { let sourceURL: URL; let bookId: UUID }
     private struct ApproveImport: Encodable { let bookId: UUID; let draft: RecipeDraft }
     private struct CreateList: Encodable { let name: String }
     private struct ReplaceItems: Encodable { let items: [ShoppingItem] }

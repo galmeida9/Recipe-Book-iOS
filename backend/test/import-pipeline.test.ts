@@ -142,3 +142,16 @@ test("no silent caption-only fallback when audio is missing or belongs to a diff
   const provider = new ImportPipelineProvider(async () => Response.json([{ url: "https://www.instagram.com/reel/other/", segments: [] }]));
   await assert.rejects(() => provider.completeStage(run, url, pipeline));
 });
+test("actual restricted-token Standby denial is surfaced without another model call or caption-only recipe", async () => {
+  configure();
+  let requests = 0;
+  const provider = new ImportPipelineProvider(async () => {
+    requests++;
+    return Response.json([{ model: "google/gemini-2.5-flash-lite", response: null, cost_usd: null,
+      error: 'HTTP 400: {"error":{"type":"actor-restricted-access-permission-mode-not-supported","message":"Scoped tokens with restricted Actor access mode are not supported in Actor Standby."}}' }]);
+  });
+  await assert.rejects(() => provider.completeStage(run, url, {
+    ...initialPipeline(), stage: "model", evidence: { caption: "400 g tomatoes", transcript: "Boil tomatoes.", comments: [] }
+  }), /does not support the restricted runtime token/);
+  assert.equal(requests, 1);
+});

@@ -6,6 +6,7 @@ import { ImportPipelineProvider, reviewedPipeline } from "./import-pipeline.js";
 import { ImportService, importDelivery } from "./imports.js";
 import { RecipeBookService } from "./service.js";
 import { enqueueImport } from "./queue.js";
+import { GeminiExtractor } from "./gemini.js";
 
 export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResponseInit> {
   const headers = { "Cache-Control": "no-store", "Content-Type": "application/json" };
@@ -21,12 +22,13 @@ export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResp
       invariant(budget.spentMicros + budget.reserveMicros <= budget.capMicros,
         429, "budget_exhausted", "The shared allowance cannot cover this bounded proof.");
       const actors = await provider.preflightAccess();
+      const model = config.modelProvider === "gemini-free" ? await new GeminiExtractor().preflight() : { model: "apify-relay", reachable: false };
       return { status: 200, jsonBody: {
         ready: true, importsEnabled: process.env["APIFY_ENABLED"] === "true", reserveMicros: budget.reserveMicros,
         observedSpentMicros: budget.spentMicros, cycle: budget.month, endsAt: budget.endsAt.toISOString(),
         ledgerCapMicros: budget.capMicros, usageVisibility: budget.visibility,
         globalUsageVisible: budget.visibility === "api-usage", operatorProofAt: budget.verifiedAt ?? null,
-        readableActorRuns: actors
+        readableActorRuns: actors, model
       }, headers };
     }
     const owner = await serializable(async transaction => {
@@ -43,7 +45,9 @@ export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResp
       z.object({ confirm: z.literal(true) }).strict().parse(JSON.parse(input));
       // Same public video as the authorized benchmark; normalize its /p/ alias
       // to the app's supported /reel/ route, never an arbitrary operator URL.
-      const job = await imports.create({ sourceURL: "https://www.instagram.com/reel/Dfn_CirxcyU/" }, key);
+      const resume = process.env["IMPORT_RUNTIME_PROBE_RESUME_SOURCE"];
+      const job = resume ? await imports.resumeCachedModel(idSchema.parse(resume), key)
+        : await imports.create({ sourceURL: "https://www.instagram.com/reel/Dfn_CirxcyU/" }, key);
       const delivery = await importDelivery(job.id);
       if (delivery) await enqueueImport(delivery);
       return { status: 200, jsonBody: { id: job.id, state: job.state }, headers };

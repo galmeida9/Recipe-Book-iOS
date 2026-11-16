@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type sql from "mssql";
 import { z } from "zod";
-import { AppError, assertVersion, canonicalReelURL, draftSchema, invariant, type ImportJob } from "./contracts.js";
+import { AppError, assertVersion, canonicalReelURL, draftSchema, idSchema, invariant, type ImportJob, type Evidence, type Principal, type RecipeDraft } from "./contracts.js";
 import { query, serializable } from "./database.js";
 import { account, bindCover, bookAccess, RecipeBookService } from "./service.js";
 import { type ProviderBudget } from "./apify.js";
@@ -23,25 +23,31 @@ interface JobRow {
   recipeId: string | null; bookId: string | null; budgetMonth: string; reservedMicros: number;
   providerRunId: string | null; dispatchStarted: boolean; dispatchStartedAt: Date | null; deadline: Date;
   pipelineData: string | null;
+  destinationBookId: string | null; reviewSeenVersion: number;
 }
 const columns = `CONVERT(varchar(36),Id) AS id,CONVERT(varchar(36),UserId) AS userId,SourceURL AS sourceURL,
  State AS state,Draft AS draft,Evidence AS evidence,Error AS error,Version AS version,CreatedAt AS createdAt,
  CONVERT(varchar(36),CompletedRecipeId) AS recipeId,CONVERT(varchar(36),CompletedBookId) AS bookId,
  BudgetMonth AS budgetMonth,ReservedMicros AS reservedMicros,ProviderRunId AS providerRunId,
- DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline,PipelineData AS pipelineData`;
+ DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline,PipelineData AS pipelineData,
+ CONVERT(varchar(36),DestinationBookId) AS destinationBookId,ReviewSeenVersion AS reviewSeenVersion`;
 function job(row: JobRow): ImportJob {
   return {
     id: row.id.toLowerCase(), sourceURL: row.sourceURL, state: row.state, version: row.version,
     draft: row.draft === null ? null : draftSchema.parse(JSON.parse(row.draft)),
     evidence: row.evidence === null ? null : evidenceSchema.parse(JSON.parse(row.evidence)),
     error: row.error, createdAt: row.createdAt.toISOString(),
-    recipeId: row.recipeId?.toLowerCase() ?? null, bookId: row.bookId?.toLowerCase() ?? null
+    recipeId: row.recipeId?.toLowerCase() ?? null, bookId: row.bookId?.toLowerCase() ?? null,
+    destinationBookId: row.destinationBookId?.toLowerCase() ?? null,
+    stage: row.state === "running" ? row.pipelineData ? pipelineSchema.parse(JSON.parse(row.pipelineData)).stage : "metadata" : row.state,
+    isUnseen: row.state === "review" && row.reviewSeenVersion < row.version
   };
 }
 async function getJob(transaction: sql.Transaction, id: string, userId: string): Promise<JobRow> {
   const rows = await query<JobRow>(transaction,
     `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id AND UserId=@userId`, { id, userId });
   invariant(rows[0], 404, "import_not_found", "Import job not found.");
+  if (rows[0].destinationBookId) await bookAccess(transaction, rows[0].destinationBookId, userId);
   return rows[0];
 }
 async function reserve(transaction: sql.Transaction, budget: ProviderBudget): Promise<void> {
@@ -83,11 +89,17 @@ export class ImportService {
       : process.env["APIFY_CUSTOMER_IMPORTS_ENABLED"] === "true",
     503, "imports_not_enabled", "Instagram importing is not enabled for customer requests yet.");
   }
-  list() {
+  list(bookId?: string) {
     return this.service.execute(async (transaction, userId) => {
       await expireUndelivered(transaction, userId);
+      if (bookId) await bookAccess(transaction, bookId, userId);
       return (await query<JobRow>(transaction,
-        `SELECT TOP(100) ${columns} FROM dbo.ImportJobs WHERE UserId=@userId AND State<>'discarded' ORDER BY CreatedAt DESC`, { userId })).map(job);
+        `SELECT TOP(100) ${columns} FROM dbo.ImportJobs WHERE UserId=@userId AND State<>'discarded'
+        AND (@bookId IS NULL OR DestinationBookId=@bookId)
+        AND (DestinationBookId IS NULL OR EXISTS(
+          SELECT 1 FROM dbo.Books b JOIN dbo.Memberships m ON m.BookId=b.Id
+          WHERE b.Id=DestinationBookId AND m.UserId=@userId))
+        ORDER BY CreatedAt DESC`, { userId, bookId: bookId ?? null })).map(job);
     });
   }
   get(id: string) {
@@ -96,32 +108,42 @@ export class ImportService {
       return job(await getJob(transaction, id, userId));
     });
   }
-  async create(input: unknown, key: string) {
+  async create(input: unknown, key: string, expectedAccountId?: string) {
     this.requireAdmission();
-    const { sourceURL: raw } = z.object({ sourceURL: z.string().max(2048) }).strict().parse(input);
+    const { sourceURL: raw, bookId: destination } = z.object({ sourceURL: z.string().max(2048), bookId: idSchema.optional() }).strict().parse(input);
+    invariant(destination || this.admission === "operator-proof", 400, "destination_required", "Choose a recipe book before importing.");
     const sourceURL = canonicalReelURL(raw);
     // Check persisted idempotency before making even uncharged provider calls.
     const existing = await this.service.execute(async (transaction, userId) => {
+      invariant(!expectedAccountId || expectedAccountId === userId, 409, "account_changed", "Sign-in changed before the import was submitted.");
       await expireUndelivered(transaction, userId);
+      if (destination) await bookAccess(transaction, destination, userId);
       const requests = await query<{ jobId: string; sourceURL: string }>(transaction,
         "SELECT CONVERT(varchar(36),JobId) AS jobId,SourceURL AS sourceURL FROM dbo.ImportRequests WHERE UserId=@userId AND IdempotencyKey=@key", { userId, key });
       if (!requests[0]) return null;
       invariant(requests[0].sourceURL === sourceURL, 409, "idempotency_conflict", "This idempotency key belongs to a different Reel.");
-      return job(await getJob(transaction, requests[0].jobId, userId));
+      const current = await getJob(transaction, requests[0].jobId, userId);
+      invariant((current.destinationBookId?.toLowerCase() ?? null) === (destination ?? null), 409, "idempotency_conflict", "This import key belongs to a different destination book.");
+      return job(current);
     });
     if (existing) return existing;
     const budget = await this.provider.budget();
     return this.service.execute(async (transaction, userId) => {
+      invariant(!expectedAccountId || expectedAccountId === userId, 409, "account_changed", "Sign-in changed before the import was submitted.");
+      if (destination) await bookAccess(transaction, destination, userId);
       const requests = await query<{ jobId: string; sourceURL: string }>(transaction,
         "SELECT CONVERT(varchar(36),JobId) AS jobId,SourceURL AS sourceURL FROM dbo.ImportRequests WITH(UPDLOCK,HOLDLOCK) WHERE UserId=@userId AND IdempotencyKey=@key", { userId, key });
       if (requests[0]) {
         invariant(requests[0].sourceURL === sourceURL, 409, "idempotency_conflict", "This idempotency key belongs to a different Reel.");
-        return job(await getJob(transaction, requests[0].jobId, userId));
+        const current = await getJob(transaction, requests[0].jobId, userId);
+        invariant((current.destinationBookId?.toLowerCase() ?? null) === (destination ?? null), 409, "idempotency_conflict", "This import key belongs to a different destination book.");
+        return job(current);
       }
       const duplicate = await query<JobRow>(transaction,
         `SELECT TOP(1) ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK)
-        WHERE UserId=@userId AND SourceURL=@sourceURL AND BudgetMonth=@month ORDER BY CreatedAt DESC`,
-        { userId, sourceURL, month: budget.month });
+        WHERE UserId=@userId AND SourceURL=@sourceURL AND BudgetMonth=@month
+        AND (DestinationBookId=@destination OR (DestinationBookId IS NULL AND @destination IS NULL)) ORDER BY CreatedAt DESC`,
+        { userId, sourceURL, month: budget.month, destination: destination ?? null });
       if (duplicate[0]) {
         await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)",
           { userId, key, id: duplicate[0].id, sourceURL });
@@ -133,9 +155,9 @@ export class ImportService {
       await reserve(transaction, budget);
       const id = randomUUID();
       const deadline = new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime()));
-      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData)
-        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline)`,
-        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline, pipeline: JSON.stringify(initialPipeline()) });
+      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData,DestinationBookId)
+        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline,@destination)`,
+        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline, pipeline: JSON.stringify(initialPipeline()), destination: destination ?? null });
       await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)", { userId, key, id, sourceURL });
       return job(await getJob(transaction, id, userId));
     });
@@ -170,12 +192,63 @@ export class ImportService {
       return { id: userId };
     });
   }
+  markSeen(id: string, version: number) {
+    return this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      assertVersion(row.version, version);
+      invariant(row.state === "review", 409, "review_required", "Only a ready review draft can be marked as seen.");
+      await query(transaction, "UPDATE dbo.ImportJobs SET ReviewSeenVersion=Version WHERE Id=@id", { id });
+      return job(await getJob(transaction, id, userId));
+    });
+  }
+  async resumeCachedModel(id: string, key: string) {
+    invariant(this.admission === "operator-proof" && process.env["IMPORT_RUNTIME_PROBE_ENABLED"] === "true" &&
+      approvedPipeline().modelProvider === "gemini-free", 403, "resume_not_approved", "Cached model recovery requires an explicitly authorized free-model proof.");
+    const cached = await this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      invariant(row.state === "failed" && row.pipelineData && row.providerRunId &&
+        row.createdAt.getTime() > Date.now() - 24 * 60 * 60_000, 409, "resume_unsafe", "This failed import does not have recent, definite model-stage evidence.");
+      const pipeline = pipelineSchema.parse(JSON.parse(row.pipelineData));
+      invariant(pipeline.stage === "model" && pipeline.evidence?.transcript && pipeline.runs.length === 2,
+        409, "resume_unsafe", "Both completed metadata and audio stages are required; they will not be charged again.");
+      return { row, pipeline };
+    });
+    const previous = await this.provider.run(cached.row.providerRunId!);
+    invariant(previous.status === "SUCCEEDED", 409, "resume_unsafe", "The prior provider outcome is not definitively terminal.");
+    const budget = await this.provider.budget();
+    return this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      assertVersion(row.version, cached.row.version);
+      const existing = await query<{ id: string }>(transaction,
+        "SELECT CONVERT(varchar(36),JobId) AS id FROM dbo.ImportRequests WITH(UPDLOCK,HOLDLOCK) WHERE UserId=@userId AND IdempotencyKey=@key", { userId, key });
+      if (existing[0]) {
+        const found = await getJob(transaction, existing[0].id, userId);
+        invariant(found.pipelineData && pipelineSchema.parse(JSON.parse(found.pipelineData)).resumedFrom === id,
+          409, "idempotency_conflict", "This model-resume key belongs to a different source job.");
+        return job(found);
+      }
+      await reserve(transaction, budget);
+      const newId = randomUUID();
+      const pipeline = { ...initialPipeline(), stage: "model" as const, evidence: cached.pipeline.evidence,
+        thumbnailURL: cached.pipeline.thumbnailURL, runs: cached.pipeline.runs, resumedFrom: row.id.toLowerCase() };
+      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData,DestinationBookId)
+        VALUES(@newId,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline,@destination)`,
+      { newId, userId, key, sourceURL: row.sourceURL, month: budget.month, reserve: budget.reserveMicros,
+        deadline: new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime())),
+        pipeline: JSON.stringify(pipeline), destination: row.destinationBookId });
+      await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@newId,@sourceURL)",
+        { userId, key, newId, sourceURL: row.sourceURL });
+      return job(await getJob(transaction, newId, userId));
+    });
+  }
   approve(id: string, bookId: string, input: unknown, version: number) {
     const draft = draftSchema.parse(input);
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
       assertVersion(row.version, version);
       invariant(row.state === "review", 409, "review_required", "This job is not ready for review.");
+      invariant(!row.destinationBookId || row.destinationBookId.toLowerCase() === bookId.toLowerCase(),
+        409, "destination_changed", "Save this import to the recipe book selected when it was shared.");
       draft.sourceURL = row.sourceURL;
       await bookAccess(transaction, bookId, userId);
       const counts = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.Recipes WHERE BookId=@bookId", { bookId });
@@ -228,20 +301,31 @@ export async function processImport(id: string, provider = new ImportPipelinePro
         AND Revoked=0 AND ExpiresAt>SYSUTCDATETIME()`, { ...identities[0] });
       allowed = invitations[0]!.count > 0;
     }
+    if (allowed && row.destinationBookId) {
+      try { await bookAccess(transaction, row.destinationBookId, row.userId); }
+      catch (error) {
+        if (!(error instanceof AppError) || error.code !== "book_not_found") throw error;
+        allowed = false;
+      }
+    }
     if (!allowed || row.deadline.getTime() <= Date.now()) return { kind: "expired" as const, row };
     if (row.providerRunId) return { kind: "poll" as const, row, principal: identities[0]! };
     if (row.dispatchStarted) {
-      if ((row.dispatchStartedAt?.getTime() ?? 0) < Date.now() - 60_000) return { kind: "ambiguous" as const, row };
+      const grace = row.pipelineData && pipelineSchema.parse(JSON.parse(row.pipelineData)).stage === "model" ? 180_000 : 60_000;
+      if ((row.dispatchStartedAt?.getTime() ?? 0) < Date.now() - grace) return { kind: "ambiguous" as const, row };
       return null;
     }
-    approvedPipeline();
+    const config = approvedPipeline();
     invariant(row.pipelineData, 409, "pipeline_missing", "This old import predates model-assisted extraction. It will not be automatically charged again.");
     pipelineSchema.parse(JSON.parse(row.pipelineData));
     // Commit dispatch intent before the charged POST. A crash/timeout cannot
     // trigger another POST; unknown outcomes consume the full reservation.
     await query(transaction, `UPDATE dbo.ImportJobs SET DispatchStarted=1,DispatchStartedAt=SYSUTCDATETIME(),
       State='running',Version=Version+1 WHERE Id=@id`, { id });
-    return { kind: "start" as const, row };
+    const pipeline = pipelineSchema.parse(JSON.parse(row.pipelineData));
+    return pipeline.stage === "model" && config.modelProvider === "gemini-free"
+      ? { kind: "extract" as const, row, principal: identities[0]! }
+      : { kind: "start" as const, row };
   });
   if (!action) return;
   if (action.kind === "expired" || action.kind === "ambiguous") {
@@ -255,6 +339,18 @@ export async function processImport(id: string, provider = new ImportPipelinePro
     await finishImport(action.row, null, null, action.kind === "ambiguous"
       ? "Provider dispatch outcome is unknown. No automatic retry was attempted."
       : "Import expired or app access was revoked.");
+    return;
+  }
+  if (action.kind === "extract") {
+    try {
+      const pipeline = pipelineSchema.parse(JSON.parse(action.row.pipelineData!));
+      const result = await provider.extractDirect(action.row.sourceURL, pipeline);
+      await finishReviewedImport(action.row, result.review.draft, result.evidence, pipeline.thumbnailURL, action.principal);
+    } catch (error) {
+      await finishImport(action.row, null, null, error instanceof AppError ? error.message :
+        "The free model result could not be validated. No automatic retry was made.");
+      throw error;
+    }
     return;
   }
   if (action.kind === "start") {
@@ -298,18 +394,7 @@ export async function processImport(id: string, provider = new ImportPipelinePro
       });
     } else {
       invariant(completed.review, 502, "extraction_missing", "The model did not return a validated editable draft.");
-      if (pipeline.thumbnailURL) {
-        try {
-          const bytes = await downloadInstagramCover(pipeline.thumbnailURL);
-          const cover = await uploadRecipeImage(new RecipeBookService(action.principal),
-            { jpegBase64: bytes.toString("base64") }, action.row.id.toLowerCase(), action.row.userId.toLowerCase());
-          completed.review.draft.coverImageID = cover.id;
-        } catch (error) {
-          if (!(error instanceof AppError) || !["thumbnail_unavailable", "invalid_cover", "image_limit"].includes(error.code)) throw error;
-          completed.evidence.warnings = ["Cover photo unavailable: " + error.message, ...(completed.evidence.warnings ?? [])].slice(0, 100);
-        }
-      }
-      await finishImport(action.row, JSON.stringify(completed.review.draft), JSON.stringify(completed.evidence), null);
+      await finishReviewedImport(action.row, completed.review.draft, completed.evidence, pipeline.thumbnailURL, action.principal);
     }
   } catch (error) {
     const message = error instanceof AppError ? error.message : "Provider evidence could not be validated. Review is unavailable.";
@@ -317,11 +402,39 @@ export async function processImport(id: string, provider = new ImportPipelinePro
     throw error;
   }
 }
+async function finishReviewedImport(row: JobRow, draft: RecipeDraft, evidence: Evidence, thumbnail: string | null, principal: Principal) {
+  if (thumbnail) {
+    try {
+      const bytes = await downloadInstagramCover(thumbnail);
+      const cover = await uploadRecipeImage(new RecipeBookService(principal),
+        { jpegBase64: bytes.toString("base64") }, row.id.toLowerCase(), row.userId.toLowerCase());
+      draft.coverImageID = cover.id;
+    } catch (error) {
+      if (!(error instanceof AppError) || !["thumbnail_unavailable", "invalid_cover", "image_limit"].includes(error.code)) throw error;
+      evidence.warnings = ["Cover photo unavailable: " + error.message, ...(evidence.warnings ?? [])].slice(0, 100);
+    }
+  }
+  await finishImport(row, JSON.stringify(draft), JSON.stringify(evidence), null);
+}
 async function finishImport(row: JobRow, draft: string | null, evidence: string | null, error: string | null): Promise<void> {
   await serializable(async transaction => {
     const current = (await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id: row.id }))[0];
     if (!current || !["queued", "running"].includes(current.state)
       || current.deadline.getTime() !== row.deadline.getTime()) return;
+    if (draft && current.deadline.getTime() <= Date.now()) {
+      draft = null;
+      evidence = null;
+      error = "The import deadline elapsed before its recipe draft was committed.";
+    }
+    if (draft && current.destinationBookId) {
+      try { await bookAccess(transaction, current.destinationBookId, current.userId); }
+      catch (failure) {
+        if (!(failure instanceof AppError) || failure.code !== "book_not_found") throw failure;
+        draft = null;
+        evidence = null;
+        error = "The destination book is no longer accessible. No recipe was saved.";
+      }
+    }
     await query(transaction, `UPDATE dbo.ImportJobs SET State=@state,Draft=@draft,Evidence=@evidence,Error=@error,Version=Version+1 WHERE Id=@id`,
       { id: row.id, state: error ? "failed" : "review", draft, evidence, error });
     // Conservative settlement: reserve the entire hard cap as spent even if the
