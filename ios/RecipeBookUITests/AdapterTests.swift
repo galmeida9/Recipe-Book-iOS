@@ -52,6 +52,43 @@ private final class HTTPFixture: URLProtocol, @unchecked Sendable {
 final class AdapterTests: XCTestCase {
     private let accountID = "a0000000-0000-0000-0000-000000000001"
 
+    func testPastedImportBindsDestinationAndAccountWithoutReadingAnAppGroupInbox() async throws {
+        let (service, _) = try adapter()
+        let bookID = "b0000000-0000-0000-0000-000000000001"
+        HTTPFixture.state.reset("""
+        {"id":"\(accountID)","displayName":"Fixture","access":"active","state":"queued",
+         "sourceURL":"https://www.instagram.com/reel/Fixture/","draft":null,"evidence":null,
+         "error":null,"version":1,"createdAt":"2026-11-16T00:00:00.000Z",
+         "recipeId":null,"bookId":null,"destinationBookId":"\(bookID)","stage":"queued","isUnseen":false}
+        """)
+        let url = URL(string: "https://instagram.com/reel/Fixture/?tracking=ignored")!
+        let first = try await service.submitImport(url: url, bookID: bookID)
+        let second = try await service.submitImport(url: url, bookID: bookID)
+        XCTAssertEqual(first.bookID, bookID)
+        XCTAssertEqual(first.status, .queued)
+        XCTAssertEqual(second.id, first.id)
+        let posts = HTTPFixture.state.recordedRequests().filter { $0.httpMethod == "POST" }
+        XCTAssertEqual(posts.count, 2)
+        XCTAssertEqual(posts[0].value(forHTTPHeaderField: "Idempotency-Key"), posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
+        XCTAssertEqual(posts[0].value(forHTTPHeaderField: "X-Recipe-Account-ID"), accountID)
+        var encoded = posts[0].httpBody
+        if encoded == nil, let stream = posts[0].httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var data = Data(), buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count >= 0 else { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+                if count == 0 { break }
+                data.append(contentsOf: buffer.prefix(count))
+            }
+            encoded = data
+        }
+        let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(encoded)) as? [String: String])
+        XCTAssertEqual(body["bookId"]?.lowercased(), bookID)
+        XCTAssertEqual(body["sourceURL"], "https://www.instagram.com/reel/Fixture/")
+    }
+
     private func adapter() throws -> (UIServiceAdapter, TestAuthentication) {
         let auth = TestAuthentication()
         let configuration = URLSessionConfiguration.ephemeral
