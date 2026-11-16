@@ -20,6 +20,12 @@ on:
         required: true
         type: boolean
         default: false
+      screenshot_set:
+        description: 'Known fixture selection for bounded screenshot transfer'
+        required: true
+        type: choice
+        options: [standard, plan]
+        default: standard
       installation_check_only:
         description: 'Build only a clearly labeled unsigned installation check for an existing private draft'
         required: true
@@ -42,6 +48,8 @@ jobs:
     if: github.event_name == 'push' || (inputs.licensed_host_approved && !inputs.installation_check_only)
     runs-on: macos-latest
     timeout-minutes: 20
+    env:
+      PREVIEW_SET: ${{ inputs.screenshot_set || 'standard' }}
     steps:
       - uses: actions/checkout@v4
       - name: Select newest installed Xcode without downloading SDKs
@@ -84,14 +92,25 @@ jobs:
           ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d,reverse=True) if "iOS" in k for x in d[k] if x.get("isAvailable") and x["name"].startswith("iPhone")))')
           echo "id=$ID" >> "$GITHUB_OUTPUT"
       - name: Run native Simulator launch smoke test
-        run: xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build -resultBundlePath native-tests.xcresult CODE_SIGNING_ALLOWED=NO test
+        run: |
+          case "$PREVIEW_SET" in
+            standard) SELECTOR="-skip-testing:RecipeBookUITests/PreviewCaptureTests/testCaptureDisclosedPlanScreen" ;;
+            plan) SELECTOR="-only-testing:RecipeBookUITests/PreviewCaptureTests/testCaptureDisclosedPlanScreen" ;;
+            *) exit 1 ;;
+          esac
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -destination 'id=${{ steps.simulator.outputs.id }}' -derivedDataPath simulator-build -resultBundlePath native-tests.xcresult "$SELECTOR" CODE_SIGNING_ALLOWED=NO test
       - name: Export requested native fixture screenshots locally on the runner
         run: |
           xcrun xcresulttool export attachments --path native-tests.xcresult --output-path fixture-screenshots
-          node scripts/native-preview-transfer.mjs check fixture-screenshots
+          SUFFIX=""
+          if [ "$PREVIEW_SET" = plan ]; then SUFFIX="-plan"; fi
+          node scripts/native-preview-transfer.mjs "check$SUFFIX" fixture-screenshots
       - name: Transfer only disclosed fixture PNGs through ordinary logs
         if: github.event_name == 'workflow_dispatch' && inputs.screenshot_logs && !inputs.upload_artifact
-        run: node scripts/native-preview-transfer.mjs emit fixture-screenshots
+        run: |
+          SUFFIX=""
+          if [ "$PREVIEW_SET" = plan ]; then SUFFIX="-plan"; fi
+          node scripts/native-preview-transfer.mjs "emit$SUFFIX" fixture-screenshots
       - uses: actions/upload-artifact@v4
         if: inputs.upload_artifact
         with:

@@ -54,6 +54,30 @@ test("export manifest permits only known passed capture attachments and ordinary
       fs.writeFileSync(path.join(directory, exportedFileName), images().get(name));
       return { exportedFileName, suggestedHumanReadableName: name, isAssociatedWithFailure: false };
     });
+
+    test("Plan-only capture has its own exact allowlist without weakening the four-screen profile or byte limits", () => {
+      const name = "Fixture-preview-plan.png";
+      const plan = new Map([[name, images().get(names[0])]]);
+      const frames = encodeFrames(plan, "plan").join("\n");
+      assert.deepEqual(decodeFrames(frames, "plan"), plan);
+      assert.throws(() => decodeFrames(frames));
+      assert.throws(() => encodeFrames(images(), "plan"));
+      assert.throws(() => encodeFrames(plan, "arbitrary"));
+      assert.throws(() => encodeFrames(new Map([[name, Buffer.alloc(512 * 1024 + 1)]]), "plan"));
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "recipe-plan-transfer-test-"));
+      try {
+        fs.writeFileSync(path.join(directory, "plan.png"), plan.get(name));
+        const manifest = [{ testIdentifier: "PreviewCaptureTests/testCaptureDisclosedPlanScreen()", attachments: [{
+          exportedFileName: "plan.png", suggestedHumanReadableName: name, isAssociatedWithFailure: false
+        }] }];
+        fs.writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest));
+        assert.equal(collectFixtures(directory, "plan").size, 1);
+        assert.throws(() => collectFixtures(directory));
+        manifest[0].testIdentifier = "PreviewCaptureTests/testCaptureDisclosedFixtureScreens()";
+        fs.writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest));
+        assert.throws(() => collectFixtures(directory, "plan"));
+      } finally { fs.rmSync(directory, { recursive: true }); }
+    });
     const manifest = [{ testIdentifier: "PreviewCaptureTests/testCaptureDisclosedFixtureScreens()", attachments }];
     const writeManifest = () => fs.writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest));
     writeManifest();

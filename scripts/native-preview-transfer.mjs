@@ -4,7 +4,15 @@ import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const names = ["sign-in", "library", "recipe-detail", "shopping"].map(screen => `Fixture-preview-${screen}.png`);
-const allowed = new Set(names);
+const profiles = {
+  standard: { names, method: "testCaptureDisclosedFixtureScreens" },
+  plan: { names: ["Fixture-preview-plan.png"], method: "testCaptureDisclosedPlanScreen" }
+};
+const profileFor = name => {
+  if (!Object.hasOwn(profiles, name)) throw new Error("Unknown fixture capture profile.");
+  const profile = profiles[name];
+  return { ...profile, allowed: new Set(profile.names) };
+};
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const maxTotal = 1024 * 1024;
 const maxImage = 512 * 1024;
@@ -12,8 +20,9 @@ const chunkLength = 3072;
 const hash = data => createHash("sha256").update(data).digest("hex");
 const requireValue = (condition, message) => { if (!condition) throw new Error(message); };
 
-function validateImages(images) {
-  requireValue(images.size === 4 && [...images.keys()].every(name => allowed.has(name)), "Exactly four known fixture PNGs are required.");
+function validateImages(images, selection = "standard") {
+  const profile = profileFor(selection);
+  requireValue(images.size === profile.names.length && [...images.keys()].every(name => profile.allowed.has(name)), "Exactly the selected known fixture PNGs are required.");
   let total = 0;
   for (const [name, data] of images) {
     requireValue(data.length >= 33 && data.length <= maxImage, `Unexpected PNG size: ${name}`);
@@ -27,9 +36,10 @@ function validateImages(images) {
   return total;
 }
 
-export function collectFixtures(directory) {
+export function collectFixtures(directory, selection = "standard") {
+  const profile = profileFor(selection);
   const files = fs.readdirSync(directory, { withFileTypes: true });
-  requireValue(files.every(file => file.isFile()) && files.length === 5, "Only the manifest and four ordinary PNG files are permitted.");
+  requireValue(files.every(file => file.isFile()) && files.length === profile.names.length + 1, "Only the manifest and selected ordinary PNG files are permitted.");
   const manifestPath = path.join(directory, "manifest.json");
   requireValue(fs.statSync(manifestPath).size <= 65536, "Attachment manifest exceeds its bound.");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
@@ -41,14 +51,15 @@ export function collectFixtures(directory) {
     if (entry.attachments.length === 0) continue;
     const parts = String(entry.testIdentifier).split("/");
     requireValue(["PreviewCaptureTests", "RecipeBookUITests.PreviewCaptureTests"].includes(parts.at(-2)) &&
-      ["testCaptureDisclosedFixtureScreens()", "testCaptureDisclosedFixtureScreens"].includes(parts.at(-1)),
+      [profile.method + "()", profile.method].includes(parts.at(-1)),
       "Attachments from an unexpected test are refused.");
     for (const attachment of entry.attachments) {
       const suggested = attachment.suggestedHumanReadableName;
       const match = typeof suggested === "string" && suggested.length <= 256 &&
-        /^(Fixture-preview-(?:sign-in|library|recipe-detail|shopping))(?:_[A-Za-z0-9_.-]+)?(?:\.png)?$/.exec(suggested);
+        /^(Fixture-preview-(?:sign-in|library|recipe-detail|shopping|plan))(?:_[A-Za-z0-9_.-]+)?(?:\.png)?$/.exec(suggested);
       requireValue(match && attachment.isAssociatedWithFailure === false, `Unexpected fixture attachment: ${JSON.stringify(suggested)}`);
       const name = `${match[1]}.png`;
+      requireValue(profile.allowed.has(name), "Screenshot is not in the selected fixture profile.");
       const exported = attachment.exportedFileName;
       requireValue(typeof exported === "string" && /^[A-Za-z0-9_-]+\.png$/.test(exported) &&
         files.some(file => file.name === exported), "Unexpected exported PNG filename.");
@@ -59,14 +70,15 @@ export function collectFixtures(directory) {
     }
   }
   requireValue(exports.size === files.length && files.every(file => exports.has(file.name)), "Unexpected files in screenshot export.");
-  validateImages(images);
+  validateImages(images, selection);
   return images;
 }
 
-export function encodeFrames(images) {
-  validateImages(images);
+export function encodeFrames(images, selection = "standard") {
+  const profile = profileFor(selection);
+  validateImages(images, selection);
   const lines = [];
-  for (const name of names) {
+  for (const name of profile.names) {
     const data = images.get(name);
     lines.push(`RBPREVIEW_BEGIN|${name}|${data.length}|${hash(data)}`);
     const encoded = data.toString("base64");
@@ -79,7 +91,8 @@ export function encodeFrames(images) {
   return lines;
 }
 
-export function decodeFrames(log) {
+export function decodeFrames(log, selection = "standard") {
+  const profile = profileFor(selection);
   const records = new Map();
   let total = 0;
   for (const line of log.split(/\r?\n/)) {
@@ -88,7 +101,7 @@ export function decodeFrames(log) {
     const frame = line.slice(marker);
     requireValue(frame.length <= chunkLength + 200, "Screenshot log frame exceeds its bound.");
     const [type, name, value, payload, ...extra] = frame.split("|");
-    requireValue(extra.length === 0 && allowed.has(name), "Unexpected screenshot log filename/frame.");
+    requireValue(extra.length === 0 && profile.allowed.has(name), "Unexpected screenshot log filename/frame.");
     if (type === "RBPREVIEW_BEGIN") {
       requireValue(!records.has(name) && /^[1-9][0-9]*$/.test(value) &&
         /^[0-9a-f]{64}$/.test(payload ?? ""), "Invalid or duplicate screenshot header.");
@@ -121,25 +134,27 @@ export function decodeFrames(log) {
       `Screenshot integrity verification failed: ${name}`);
     images.set(name, data);
   }
-  validateImages(images);
+  validateImages(images, selection);
   return images;
 }
 
 function main() {
-  const [command, input, output] = process.argv.slice(2);
+  const [requested, input, output] = process.argv.slice(2);
+  const selection = requested?.endsWith("-plan") ? "plan" : "standard";
+  const command = selection === "plan" ? requested.slice(0, -5) : requested;
   requireValue(input && ((command === "decode" && output && process.argv.length === 5) ||
-    (["check", "emit"].includes(command) && process.argv.length === 4)), "Use check/emit <export-directory>, or decode <run-log> <empty-output-directory>.");
+    (["check", "emit"].includes(command) && process.argv.length === 4)), "Use check/emit[-plan] <export-directory>, or decode[-plan] <run-log> <empty-output-directory>.");
   if (command !== "decode") {
-    const images = collectFixtures(input);
-    if (command === "emit") for (const line of encodeFrames(images)) console.log(line);
-    else console.log(`Verified fixture PNGs: ${images.size}; total bytes: ${validateImages(images)}`);
+    const images = collectFixtures(input, selection);
+    if (command === "emit") for (const line of encodeFrames(images, selection)) console.log(line);
+    else console.log(`Verified fixture PNGs: ${images.size}; total bytes: ${validateImages(images, selection)}`);
     return;
   }
   requireValue(fs.statSync(input).size <= 32 * 1024 * 1024, "Run log exceeds the 32 MiB decoder bound.");
-  const images = decodeFrames(fs.readFileSync(input, "utf8"));
+  const images = decodeFrames(fs.readFileSync(input, "utf8"), selection);
   fs.mkdirSync(output, { recursive: true });
   requireValue(fs.readdirSync(output).length === 0, "Output directory must be empty; existing files will not be overwritten.");
-  for (const name of names) {
+  for (const name of profileFor(selection).names) {
     const data = images.get(name);
     fs.writeFileSync(path.join(output, name), data, { flag: "wx" });
     console.log(`${name}: ${data.length} bytes; SHA256 ${hash(data)}`);
