@@ -2,10 +2,12 @@ import Foundation
 import XCTest
 import RecipeBookCore
 import RecipeBookPresentation
+import UIKit
 
 private actor GuestCloudProbe: RecipeBookService {
     let profile: UserProfile
     var state: SessionState
+    private(set) var extendedCalls: [String] = []
     init(id: String, state: SessionState? = nil) {
         profile = .init(id: id, displayName: id)
         self.state = state ?? .signedIn(.init(id: id, displayName: id))
@@ -45,6 +47,28 @@ private actor GuestCloudProbe: RecipeBookService {
     func addRecipeIngredients(recipeID: RecipeID, ingredientIDs: [String], to listID: ShoppingListID) async throws -> RecipeBookPresentation.ShoppingList { throw RecipeBookUIError.serviceNotConfigured }
     func accountDeletionBlockers() async throws -> [BookDetail] { throw RecipeBookUIError.serviceNotConfigured }
     func deleteAccount(resolutions: [BookID: LastOwnerResolution]) async throws { throw RecipeBookUIError.serviceNotConfigured }
+    func imageData(_ image: ImageRef) async throws -> Data {
+        extendedCalls.append("image:\(image.id)")
+        throw guestFailure("Cloud image request.", code: "cloud_image")
+    }
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> RecipeBookPresentation.WeeklyPlan? {
+        extendedCalls.append("read:\(bookID)")
+        return nil
+    }
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [RecipeBookPresentation.MealStyle?],
+                      listID: ShoppingListID, expectedVersion: Int?) async throws -> RecipeBookPresentation.WeeklyPlan {
+        extendedCalls.append("generate:\(bookID):\(listID)")
+        throw guestFailure("Cloud plan request.", code: "cloud_plan")
+    }
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
+                        planVersion: Int) async throws -> RecipeBookPresentation.WeeklyPlan {
+        extendedCalls.append("replace:\(bookID)")
+        throw guestFailure("Cloud plan request.", code: "cloud_plan")
+    }
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws {
+        extendedCalls.append("delete:\(bookID)")
+        throw guestFailure("Cloud plan request.", code: "cloud_plan")
+    }
 }
 
 private actor GuestFactoryProbe {
@@ -398,7 +422,7 @@ final class GuestServiceTests: XCTestCase {
         let book = try await service.createBook(name: "Local", kind: .personal)
         _ = try await service.saveRecipe(.init(bookID: book.id, title: "Soup",
                     ingredients: [.init(name: "carrots", quantity: "2", unit: "pieces", preparation: "diced")],
-                    steps: [.init(text: "Cook")], sourceURL: URL(string: "https://example.invalid/soup")))
+                    steps: [.init(text: "Cook")], sourceURL: URL(string: "https://example.invalid/soup"), mealStyle: .simple))
         _ = try await service.signIn()
         do { _ = try await service.copyLocalBookToAccount(id: book.id, kind: .shared); XCTFail("Lost response must surface.") }
         catch let error as APIError { XCTAssertEqual(error.code, "transport") }
@@ -412,6 +436,8 @@ final class GuestServiceTests: XCTestCase {
         encoder.outputFormatting = .sortedKeys
         XCTAssertEqual(try encoder.encode(operations[0].payload), try encoder.encode(operations[1].payload))
         XCTAssertEqual(operations[1].payload.recipes[0].ingredients[0].preparation, "diced")
+        XCTAssertEqual(operations[1].payload.recipes[0].mealStyle, .simple)
+        XCTAssertEqual(operations[1].payload.recipes[0].sourceURL?.absoluteString, "https://example.invalid/soup")
         _ = try await reopened.copyLocalBookToAccount(id: book.id, kind: .shared)
         operations = await copy.operations
         XCTAssertEqual(operations.count, 2, "Completed operations must return the recorded result.")
@@ -486,5 +512,260 @@ final class GuestServiceTests: XCTestCase {
             XCTAssertEqual(error.code, "account_changed")
         }
         XCTAssertEqual(GuestCopyHTTP.state.recorded().count, 1)
+    }
+    func testGuestPlannerGeneratesReplacesAndDeletesWithoutTouchingManualItems() async throws {
+        let directory = try directory()
+        let factory = GuestFactoryProbe()
+        let service = try service(directory, factory)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "Weekly", kind: .personal)
+        let soup = try await service.saveRecipe(.init(bookID: book.id, title: "Soup", servings: 2,
+            ingredients: [.init(name: "carrot", quantity: "0.1", unit: "kg")],
+            sourceURL: URL(string: "https://example.invalid/soup"), mealStyle: .simple))
+        let stew = try await service.saveRecipe(.init(bookID: book.id, title: "Stew", servings: 4,
+            ingredients: [.init(name: "carrot", quantity: "0.2", unit: "kg")], mealStyle: .full))
+        let list = try await service.createShoppingList(name: "Week")
+        let manual = try await service.addShoppingItem(.init(name: "carrot", quantity: "7", unit: "g"), to: list.id)
+        let manualID = manual.items[0].id
+        let empty = try await service.readWeek(bookID: book.id, weekStart: "2026-11-16")
+        XCTAssertNil(empty)
+        var plan = try await service.generateWeek(bookID: book.id, weekStart: "2026-11-16",
+            dayStyles: [.simple, nil, nil, nil, nil, nil, nil], listID: list.id, expectedVersion: nil)
+        XCTAssertEqual(plan.days.count, 7)
+        XCTAssertEqual(plan.days[0].slot?.recipeID, soup.id)
+        XCTAssertEqual(plan.days[0].slot?.recipe?.mealStyle, .simple)
+        var shopping = try await service.shoppingList(id: list.id)
+        XCTAssertEqual(shopping.items.count, 2)
+        XCTAssertEqual(shopping.items[0].id, manualID)
+        XCTAssertEqual(shopping.items[0].quantity, "7")
+        XCTAssertEqual(shopping.items[1].quantity, "100")
+        guard case .generated(let provenance) = shopping.items[1].origin else { return XCTFail("Missing generated provenance.") }
+        XCTAssertEqual(provenance.bookID, book.id)
+        XCTAssertEqual(provenance.planID, plan.id)
+        XCTAssertEqual(provenance.planVersion, plan.version)
+        XCTAssertEqual(provenance.recipeTitles, ["Soup"])
+        shopping = try await service.setShoppingItem(shopping.items[1].id, bought: true, in: list.id)
+        XCTAssertTrue(shopping.items[1].isBought)
+        let checkedPlan = try await service.readWeek(bookID: book.id, weekStart: "2026-11-16")
+        plan = try XCTUnwrap(checkedPlan)
+        plan = try await service.replacePlanDay(bookID: book.id, weekStart: plan.weekStart, date: plan.days[0].date,
+            replacement: .init(recipeID: stew.id, recipeVersion: stew.summary.version, servings: 8), planVersion: plan.version)
+        shopping = try await service.shoppingList(id: list.id)
+        XCTAssertEqual(shopping.items[1].quantity, "400")
+        XCTAssertFalse(shopping.items[1].isBought, "Newly required amounts must not remain checked off.")
+        XCTAssertEqual(shopping.items[0], manual.items[0])
+        let reopened = try self.service(directory, factory)
+        let savedPlan = try await reopened.readWeek(bookID: book.id, weekStart: plan.weekStart)
+        XCTAssertEqual(savedPlan, plan)
+        let savedShopping = try await reopened.shoppingList(id: list.id)
+        XCTAssertEqual(savedShopping, shopping)
+        try await reopened.deleteWeek(bookID: book.id, weekStart: plan.weekStart, planVersion: plan.version)
+        let after = try await reopened.shoppingList(id: list.id)
+        XCTAssertEqual(after.items, manual.items)
+        let removed = try await reopened.readWeek(bookID: book.id, weekStart: plan.weekStart)
+        XCTAssertNil(removed)
+        let count = await factory.count
+        XCTAssertEqual(count, 0)
+    }
+    func testPlannerRecipeEditsAndDeletionReconcileAtomicallyAndRejectStaleChecking() async throws {
+        let directory = try directory()
+        let a = try GuestService(localDirectory: directory)
+        _ = try await a.continueWithoutSignIn()
+        let book = try await a.createBook(name: "Week", kind: .personal)
+        let recipe = try await a.saveRecipe(.init(bookID: book.id, title: "Rice", servings: 2,
+            ingredients: [.init(name: "rice", quantity: "100", unit: "g")], mealStyle: .simple))
+        let list = try await a.createShoppingList(name: "Shopping")
+        _ = try await a.addShoppingItem(.init(name: "manual"), to: list.id)
+        let plan = try await a.generateWeek(bookID: book.id, weekStart: "2026-11-16",
+            dayStyles: [.simple, nil, nil, nil, nil, nil, nil], listID: list.id, expectedVersion: nil)
+        let b = try GuestService(localDirectory: directory)
+        let before = try await b.shoppingList(id: list.id)
+        let generatedID = try XCTUnwrap(before.items.first(where: \.isGenerated)?.id)
+        _ = try await a.shoppingList(id: list.id)
+        _ = try await a.setShoppingItem(generatedID, bought: true, in: list.id)
+        do {
+            _ = try await b.setShoppingItem(generatedID, bought: true, in: list.id)
+            XCTFail("Checking generated rows must check the observed plan version.")
+        } catch PlannerError.versionConflict {}
+        do {
+            _ = try await b.replacePlanDay(bookID: book.id, weekStart: plan.weekStart, date: plan.days[0].date,
+                                           replacement: nil, planVersion: plan.version)
+            XCTFail("Stale replacement must fail.")
+        } catch PlannerError.versionConflict {}
+        var draft = RecipeBookPresentation.RecipeDraft(editing: recipe)
+        draft.title = "Rice changed"
+        _ = try await a.saveRecipe(draft)
+        let envelope = try GuestStore(directory: directory).read()
+        XCTAssertTrue(envelope.plans[0].generated.isEmpty)
+        XCTAssertNil(envelope.plans[0].plan.days[0].slot)
+        XCTAssertEqual(envelope.lists[0].items.count, 1)
+        XCTAssertGreaterThan(envelope.plans[0].plan.version, plan.version)
+        let currentValue = try await b.readWeek(bookID: book.id, weekStart: plan.weekStart)
+        let current = try XCTUnwrap(currentValue)
+        XCTAssertFalse(current.warnings.isEmpty)
+        let updatedValue = try await a.recipe(id: recipe.id)
+        let updated = try await a.replacePlanDay(bookID: book.id, weekStart: plan.weekStart, date: plan.days[0].date,
+            replacement: .init(recipeID: recipe.id, recipeVersion: updatedValue.summary.version, servings: 2), planVersion: current.version)
+        XCTAssertNotNil(updated.days[0].slot)
+        try await a.deleteRecipe(id: recipe.id)
+        let final = try await a.shoppingList(id: list.id)
+        XCTAssertEqual(final.items.map(\.name), ["manual"])
+    }
+    func testPlannerRegenerationMovesGeneratedSectionAndPreservesBothManualLists() async throws {
+        let a = try GuestService(localDirectory: directory())
+        _ = try await a.continueWithoutSignIn()
+        let book = try await a.createBook(name: "Week", kind: .personal)
+        _ = try await a.saveRecipe(.init(bookID: book.id, title: "Eggs",
+            ingredients: [.init(name: "egg", quantity: "1", unit: "piece")], mealStyle: .simple))
+        let first = try await a.createShoppingList(name: "First")
+        let second = try await a.createShoppingList(name: "Second")
+        _ = try await a.addShoppingItem(.init(name: "first manual"), to: first.id)
+        _ = try await a.addShoppingItem(.init(name: "second manual"), to: second.id)
+        let plan = try await a.generateWeek(bookID: book.id, weekStart: "2026-11-16",
+            dayStyles: [.simple, nil, nil, nil, nil, nil, nil], listID: first.id, expectedVersion: nil)
+        let regenerated = try await a.generateWeek(bookID: book.id, weekStart: plan.weekStart,
+            dayStyles: [.simple, .simple, nil, nil, nil, nil, nil], listID: second.id, expectedVersion: plan.version)
+        XCTAssertEqual(regenerated.id, plan.id)
+        let firstList = try await a.shoppingList(id: first.id)
+        let secondList = try await a.shoppingList(id: second.id)
+        XCTAssertEqual(firstList.items.map(\.name), ["first manual"])
+        XCTAssertEqual(secondList.items.count, 2)
+        XCTAssertEqual(secondList.items[0].name, "second manual")
+        XCTAssertEqual(secondList.items[1].quantity, "2")
+        try await a.deleteBook(id: book.id)
+        let retained = try await a.shoppingList(id: second.id)
+        XCTAssertEqual(retained.items.map(\.name), ["second manual"])
+    }
+    private func jpeg(width: CGFloat = 12, height: CGFloat = 8) throws -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format)
+        let image = renderer.image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        return try XCTUnwrap(image.jpegData(compressionQuality: 0.8))
+    }
+    func testGuestImageReopenReplacementRemovalAndSourceLinkRetention() async throws {
+        let directory = try directory()
+        let factory = GuestFactoryProbe()
+        let service = try service(directory, factory)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "Images", kind: .personal)
+        let bytes = try jpeg()
+        let source = URL(string: "https://example.invalid/original-recipe")!
+        let recipe = try await service.saveRecipe(.init(bookID: book.id, title: "Recipe", sourceURL: source,
+            mealStyle: .complicated, coverImageEdit: .replace(jpegData: bytes)))
+        let reference = try XCTUnwrap(recipe.summary.coverImage)
+        let reopened = try self.service(directory, factory)
+        let loaded = try await reopened.recipe(id: recipe.id)
+        XCTAssertEqual(loaded.sourceURL, source)
+        XCTAssertEqual(loaded.summary.mealStyle, .complicated)
+        let savedBytes = try await reopened.imageData(reference)
+        XCTAssertEqual(savedBytes, bytes)
+        var draft = RecipeBookPresentation.RecipeDraft(editing: loaded)
+        draft.title = "Edited title"
+        let unchanged = try await reopened.saveRecipe(draft)
+        XCTAssertEqual(unchanged.summary.coverImage, reference)
+        draft = .init(editing: unchanged)
+        let replacementBytes = try jpeg(width: 14)
+        draft.coverImageEdit = .replace(jpegData: replacementBytes)
+        let replacement = try await reopened.saveRecipe(draft)
+        let replacementRef = try XCTUnwrap(replacement.summary.coverImage)
+        XCTAssertNotEqual(replacementRef, reference)
+        do { _ = try await reopened.imageData(reference); XCTFail("Retired images must no longer be accessible.") }
+        catch let error as APIError { XCTAssertEqual(error.status, 404) }
+        XCTAssertEqual(try GuestStore(directory: directory).read().images.count, 1)
+        draft = .init(editing: replacement)
+        draft.coverImageEdit = .remove
+        let removed = try await reopened.saveRecipe(draft)
+        XCTAssertNil(removed.summary.coverImage)
+        XCTAssertEqual(removed.sourceURL, source)
+        XCTAssertEqual(removed.summary.mealStyle, .complicated)
+        XCTAssertTrue(try GuestStore(directory: directory).read().images.isEmpty)
+        do { _ = try await reopened.imageData(.init(id: "device-../../outside")); XCTFail("Arbitrary paths are never image references.") }
+        catch let error as APIError { XCTAssertEqual(error.status, 404) }
+        await assertGate(.account) { try await reopened.imageData(.init(id: "https://example.invalid/image.jpg")) }
+        let count = await factory.count
+        XCTAssertEqual(count, 0)
+    }
+    func testInvalidGuestImagesDoNotPartiallyPersistRecipeOrCover() async throws {
+        let directory = try directory()
+        let service = try GuestService(localDirectory: directory)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "Images", kind: .personal)
+        let bytes = try jpeg()
+        let recipe = try await service.saveRecipe(.init(bookID: book.id, title: "Valid", coverImageEdit: .replace(jpegData: bytes)))
+        for invalid in [Data(), Data("not an image".utf8), Data(repeating: 0, count: 2 * 1024 * 1024 + 1), try jpeg(width: 1601)] {
+            var draft = RecipeBookPresentation.RecipeDraft(editing: recipe)
+            draft.title = "Must not save"
+            draft.coverImageEdit = .replace(jpegData: invalid)
+            do { _ = try await service.saveRecipe(draft); XCTFail("Invalid image must fail.") }
+            catch let error as APIError { XCTAssertEqual(error.code, "image") }
+        }
+        let retained = try await service.recipe(id: recipe.id)
+        XCTAssertEqual(retained, recipe)
+        try await service.deleteRecipe(id: recipe.id)
+        XCTAssertTrue(try GuestStore(directory: directory).read().images.isEmpty)
+    }
+    func testOldGuestEnvelopeDecodesNewOptionalPlannerAndImageFieldsWithoutReset() async throws {
+        let directory = try directory()
+        let service = try GuestService(localDirectory: directory)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "Old data", kind: .personal)
+        let recipe = try await service.saveRecipe(.init(bookID: book.id, title: "Old recipe"))
+        let file = directory.appendingPathComponent("guest-store.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        json.removeValue(forKey: "storedPlans")
+        json.removeValue(forKey: "imageBytes")
+        var recipes = try XCTUnwrap(json["recipes"] as? [[String: Any]])
+        recipes[0].removeValue(forKey: "mealStyle")
+        recipes[0].removeValue(forKey: "coverImageID")
+        json["recipes"] = recipes
+        try JSONSerialization.data(withJSONObject: json).write(to: file, options: .atomic)
+        let reopened = try GuestService(localDirectory: directory)
+        let saved = try await reopened.recipe(id: recipe.id)
+        XCTAssertEqual(saved.id, recipe.id)
+        XCTAssertNil(saved.summary.mealStyle)
+        XCTAssertNil(saved.summary.coverImage)
+        let empty = try await reopened.readWeek(bookID: book.id, weekStart: "2026-11-16")
+        XCTAssertNil(empty)
+    }
+    func testAccountPlannerAndImagesDelegateButGuestAndLocalReferencesNeverDo() async throws {
+        let directory = try directory()
+        let cloud = GuestCloudProbe(id: "cloud-account")
+        let service = try GuestAwareService(localDirectory: directory, cloudFactory: { cloud })
+        _ = try await service.continueWithoutSignIn()
+        await assertGate(.account) { try await service.readWeek(bookID: "cloud-book", weekStart: "2026-11-16") }
+        await assertGate(.account) { try await service.imageData(.init(id: "cloud-image")) }
+        let localBook = try await service.createBook(name: "Local", kind: .personal)
+        _ = try await service.signIn()
+        let empty = try await service.readWeek(bookID: "cloud-book", weekStart: "2026-11-16")
+        XCTAssertNil(empty)
+        do {
+            _ = try await service.generateWeek(bookID: "cloud-book", weekStart: "2026-11-16",
+                dayStyles: Array(repeating: .simple, count: 7), listID: "cloud-list", expectedVersion: nil)
+            XCTFail("Cloud failure should surface.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "cloud_plan") }
+        do {
+            _ = try await service.replacePlanDay(bookID: "cloud-book", weekStart: "2026-11-16", date: "2026-11-16",
+                                                 replacement: nil, planVersion: 1)
+            XCTFail("Cloud failure should surface.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "cloud_plan") }
+        do {
+            try await service.deleteWeek(bookID: "cloud-book", weekStart: "2026-11-16", planVersion: 1)
+            XCTFail("Cloud failure should surface.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "cloud_plan") }
+        do {
+            _ = try await service.imageData(.init(id: "cloud-image"))
+            XCTFail("Cloud failure should surface.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "cloud_image") }
+        let localWeek = try await service.readWeek(bookID: localBook.id, weekStart: "2026-11-16")
+        XCTAssertNil(localWeek)
+        do { _ = try await service.imageData(.init(id: GuestStore.newID())); XCTFail("Local image must remain local.") }
+        catch let error as APIError { XCTAssertEqual(error.status, 404) }
+        let calls = await cloud.extendedCalls
+        XCTAssertEqual(calls, ["read:cloud-book", "generate:cloud-book:cloud-list", "replace:cloud-book",
+                               "delete:cloud-book", "image:cloud-image"])
     }
 }

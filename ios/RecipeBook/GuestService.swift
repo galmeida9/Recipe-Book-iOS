@@ -7,6 +7,7 @@ actor GuestService: RecipeBookService {
     private var bookVersions: [String: Int] = [:]
     private var recipeVersions: [String: Int] = [:]
     private var listVersions: [String: Int] = [:]
+    private var generatedVersions: [String: Int] = [:]
 
     init(localDirectory: URL) throws { store = try GuestStore(directory: localDirectory) }
     init(store: GuestStore) { self.store = store }
@@ -84,6 +85,12 @@ actor GuestService: RecipeBookService {
             try check(current.version, expected)
             state.books.removeAll { $0.id == id }
             state.recipes.removeAll { $0.bookID == id }
+            let removed = state.plans.filter { GuestStore.localID($0.plan.bookId) == id }
+            state.plans.removeAll { GuestStore.localID($0.plan.bookId) == id }
+            for index in state.lists.indices where removed.contains(where: { GuestStore.localID($0.listId) == state.lists[index].id }) {
+                state.lists[index].version += 1
+            }
+            state.cleanImages()
         }
         bookVersions[id] = nil
         for recipe in value.recipes where recipe.bookID == id { recipeVersions[recipe.id] = nil }
@@ -120,10 +127,16 @@ actor GuestService: RecipeBookService {
         let steps = try draft.steps.map { GuestStore.Step(id: $0.id, text: try text($0.text, limit: 4000, field: "step")) }
         let id = draft.recipeID ?? GuestStore.newID()
         let expected = recipeVersions[id]
+        var newImage: (String, Data)?
+        if case .replace(let bytes) = draft.coverImageEdit {
+            try GuestStore.validateJPEG(bytes)
+            newImage = (GuestStore.newID(), bytes)
+        }
         let saved = try store.transaction { state in
             guard let bookIndex = state.books.firstIndex(where: { $0.id == bookID }) else { throw missing("Book") }
             var version = 1
             var evidenceText = draft.evidenceText
+            var coverImageID: String?
             if draft.recipeID != nil {
                 guard let existing = state.recipes.first(where: { $0.id == id }), existing.bookID == bookID else {
                     throw guestFailure("Reload the recipe before editing. Recipes cannot be moved between books.")
@@ -131,13 +144,26 @@ actor GuestService: RecipeBookService {
                 try check(existing.version, expected)
                 version = existing.version + 1
                 evidenceText = evidenceText ?? existing.evidenceText
+                coverImageID = existing.coverImageID
+            }
+            switch draft.coverImageEdit {
+            case .unchanged: break
+            case .remove: coverImageID = nil
+            case .replace:
+                guard let newImage else { throw guestFailure("The selected cover image is missing.") }
+                coverImageID = newImage.0
+                state.images[newImage.0] = newImage.1
             }
             let recipe = GuestStore.Recipe(id: id, bookID: bookID, version: version, title: title,
                          servings: draft.servings, totalMinutes: draft.totalMinutes, ingredients: lines,
-                         steps: steps, sourceURL: draft.sourceURL, evidenceText: evidenceText)
+                         steps: steps, sourceURL: draft.sourceURL, evidenceText: evidenceText,
+                         mealStyle: draft.mealStyle.flatMap { RecipeBookCore.MealStyle(rawValue: $0.rawValue) },
+                         coverImageID: coverImageID)
             state.recipes.removeAll { $0.id == id }
             state.recipes.append(recipe)
             state.books[bookIndex].version += 1
+            try state.reconcilePlans()
+            state.cleanImages()
             return (recipe, state.identity, state.books[bookIndex].version)
         }
         recipeVersions[id] = saved.0.version
@@ -153,6 +179,8 @@ actor GuestService: RecipeBookService {
             try check(recipe.version, expected)
             state.recipes.removeAll { $0.id == id }
             state.books[bookIndex].version += 1
+            try state.reconcilePlans()
+            state.cleanImages()
             return state.books[bookIndex]
         }
         recipeVersions[id] = nil
@@ -178,15 +206,17 @@ actor GuestService: RecipeBookService {
         }
     }
     func shoppingLists() async throws -> [ShoppingListSummary] {
-        let value = try state()
-        for list in value.lists { listVersions[list.id] = list.version }
-        return value.lists.map(\.summary)
+        _ = try state()
+        let value = try store.transaction { state in try state.reconcilePlans(); return state }
+        for list in value.lists { remember(list, state: value) }
+        return value.lists.map { value.shoppingSummary($0) }
     }
     func shoppingList(id: ShoppingListID) async throws -> RecipeBookPresentation.ShoppingList {
-        let value = try state()
+        _ = try state()
+        let value = try store.transaction { state in try state.reconcilePlans(); return state }
         guard let list = value.lists.first(where: { $0.id == id }) else { throw missing("Shopping list") }
-        listVersions[id] = list.version
-        return list.presentation
+        remember(list, state: value)
+        return value.shopping(list)
     }
     func createShoppingList(name: String) async throws -> ShoppingListSummary {
         _ = try state()
@@ -201,16 +231,17 @@ actor GuestService: RecipeBookService {
         guard let list = value.lists.first(where: { $0.id == id }) else { throw missing("Shopping list") }
         let expected = listVersions[id] ?? list.version
         let updated = try store.transaction { state in
+            try state.reconcilePlans()
             guard let index = state.lists.firstIndex(where: { $0.id == id }) else { throw missing("Shopping list") }
             var list = state.lists[index]
             try check(list.version, expected)
             try body(&list, state)
             list.version += 1
             state.lists[index] = list
-            return list
+            return (list, state)
         }
-        listVersions[id] = updated.version
-        return updated.presentation
+        remember(updated.0, state: updated.1)
+        return updated.1.shopping(updated.0)
     }
     func deleteShoppingList(id: ShoppingListID) async throws {
         let value = try state()
@@ -219,6 +250,9 @@ actor GuestService: RecipeBookService {
         try store.transaction { state in
             guard let list = state.lists.first(where: { $0.id == id }) else { throw missing("Shopping list") }
             try check(list.version, expected)
+            guard !state.plans.contains(where: { GuestStore.localID($0.listId) == id }) else {
+                throw guestFailure("Delete or move the linked weekly plan before deleting this shopping list.")
+            }
             state.lists.removeAll { $0.id == id }
         }
         listVersions[id] = nil
@@ -228,13 +262,32 @@ actor GuestService: RecipeBookService {
         return try mutateList(listID) { list, _ in try GuestQuantities.append(value, title: nil, to: &list.items) }
     }
     func setShoppingItem(_ itemID: ShoppingItemID, bought: Bool, in listID: ShoppingListID) async throws -> RecipeBookPresentation.ShoppingList {
-        try mutateList(listID) { list, _ in
+        let value = try state()
+        if value.plans.contains(where: { GuestStore.localID($0.listId) == listID && $0.generated.contains(where: { GuestStore.localID($0.id) == itemID }) }) {
+            guard let expected = generatedVersions[itemID] else { throw guestFailure("Reload the shopping list before checking generated items.") }
+            let updated = try store.transaction { state in
+                guard let index = state.plans.firstIndex(where: { GuestStore.localID($0.listId) == listID && $0.generated.contains(where: { GuestStore.localID($0.id) == itemID }) }),
+                      let listIndex = state.lists.firstIndex(where: { $0.id == listID }) else { throw missing("Generated shopping item") }
+                let result = try CookingPlanner.checking(state.plans[index], itemId: GuestStore.uuid(itemID),
+                                  bought: bought, recipes: state.inventory(), expectedVersion: expected)
+                state.plans[index] = result
+                state.lists[listIndex].version += 1
+                return (state.lists[listIndex], state)
+            }
+            remember(updated.0, state: updated.1)
+            return updated.1.shopping(updated.0)
+        }
+        return try mutateList(listID) { list, _ in
             guard let index = list.items.firstIndex(where: { $0.id == itemID }) else { throw missing("Shopping item") }
             list.items[index].bought = bought
         }
     }
     func removeShoppingItem(_ itemID: ShoppingItemID, from listID: ShoppingListID) async throws -> RecipeBookPresentation.ShoppingList {
-        try mutateList(listID) { list, _ in
+        let value = try state()
+        guard !value.plans.contains(where: { GuestStore.localID($0.listId) == listID && $0.generated.contains(where: { GuestStore.localID($0.id) == itemID }) }) else {
+            throw guestFailure("Generated ingredients are managed by the weekly plan.")
+        }
+        return try mutateList(listID) { list, _ in
             guard list.items.contains(where: { $0.id == itemID }) else { throw missing("Shopping item") }
             list.items.removeAll { $0.id == itemID }
         }
@@ -259,6 +312,85 @@ actor GuestService: RecipeBookService {
                 let next = try ingredient(.init(name: value.name, quantity: value.quantity, unit: value.unit, preparation: value.preparation))
                 try GuestQuantities.append(next, title: title, to: &list.items)
             }
+        }
+    }
+    private func remember(_ list: GuestStore.List, state: GuestStore.State) {
+        listVersions[list.id] = list.version
+        for stored in state.plans where GuestStore.localID(stored.listId) == list.id {
+            for item in stored.generated { generatedVersions[GuestStore.localID(item.id)] = stored.plan.version }
+        }
+    }
+    func imageData(_ image: ImageRef) async throws -> Data {
+        let value = try state()
+        guard GuestStore.isLocal(image.id),
+              value.recipes.contains(where: { recipe in recipe.coverImageID == image.id && value.books.contains(where: { $0.id == recipe.bookID }) }),
+              let data = value.images[image.id] else { throw missing("Image") }
+        try GuestStore.validateJPEG(data)
+        return data
+    }
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> RecipeBookPresentation.WeeklyPlan? {
+        _ = try state()
+        _ = try CookingPlanner.weekDates(weekStart)
+        return try store.transaction { state in
+            guard state.books.contains(where: { $0.id == bookID }) else { throw missing("Book") }
+            try state.reconcilePlans()
+            guard let stored = state.plans.first(where: { GuestStore.localID($0.plan.bookId) == bookID && $0.plan.weekStart == weekStart }) else { return nil }
+            return state.presentation(stored)
+        }
+    }
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [RecipeBookPresentation.MealStyle?],
+                      listID: ShoppingListID, expectedVersion: Int?) async throws -> RecipeBookPresentation.WeeklyPlan {
+        _ = try state()
+        return try store.transaction { state in
+            guard state.books.contains(where: { $0.id == bookID }),
+                  state.lists.contains(where: { $0.id == listID }) else { throw missing("Book or shopping list") }
+            let inventory = try state.inventory()
+            let existing = state.plans.first { GuestStore.localID($0.plan.bookId) == bookID && $0.plan.weekStart == weekStart }
+            let plan = try CookingPlanner.generate(bookId: GuestStore.uuid(bookID), weekStart: weekStart,
+                styles: dayStyles.map { $0.flatMap { RecipeBookCore.MealStyle(rawValue: $0.rawValue) } },
+                recipes: inventory, existing: existing?.plan, expectedVersion: expectedVersion)
+            let result = try CookingPlanner.reconcile(plan, recipes: inventory, previous: existing?.generated ?? [])
+            let stored = StoredPlanResult(plan: result.plan, generated: result.generated, listId: try GuestStore.uuid(listID), warnings: result.warnings)
+            state.plans.removeAll { $0.plan.id == plan.id }
+            state.plans.append(stored)
+            for index in state.lists.indices where state.lists[index].id == listID || existing.map({ GuestStore.localID($0.listId) == state.lists[index].id }) == true {
+                state.lists[index].version += 1
+            }
+            return state.presentation(stored)
+        }
+    }
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
+                        planVersion: Int) async throws -> RecipeBookPresentation.WeeklyPlan {
+        _ = try state()
+        return try store.transaction { state in
+            guard state.books.contains(where: { $0.id == bookID }),
+                  let index = state.plans.firstIndex(where: { GuestStore.localID($0.plan.bookId) == bookID && $0.plan.weekStart == weekStart }) else { throw missing("Weekly plan") }
+            let stored = state.plans[index]
+            let inventory = try state.inventory()
+            let slot: RecipeBookCore.PlanSlot?
+            if let replacement {
+                let id = try GuestStore.uuid(replacement.recipeID)
+                guard let recipe = inventory.first(where: { $0.id == id && $0.bookId == stored.plan.bookId }) else { throw PlannerError.recipeUnavailable }
+                slot = .init(recipeId: id, recipeVersion: replacement.recipeVersion ?? recipe.version, servings: replacement.servings)
+            } else { slot = nil }
+            let plan = try CookingPlanner.replacing(stored.plan, date: date, replacement: slot,
+                                                   recipes: inventory, expectedVersion: planVersion)
+            let result = try CookingPlanner.reconcile(plan, recipes: inventory, previous: stored.generated)
+            let updated = StoredPlanResult(plan: result.plan, generated: result.generated, listId: stored.listId, warnings: result.warnings)
+            state.plans[index] = updated
+            if let listIndex = state.lists.firstIndex(where: { $0.id == GuestStore.localID(stored.listId) }) { state.lists[listIndex].version += 1 }
+            return state.presentation(updated)
+        }
+    }
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws {
+        _ = try state()
+        try store.transaction { state in
+            guard state.books.contains(where: { $0.id == bookID }),
+                  let index = state.plans.firstIndex(where: { GuestStore.localID($0.plan.bookId) == bookID && $0.plan.weekStart == weekStart }) else { throw missing("Weekly plan") }
+            let stored = state.plans[index]
+            guard stored.plan.version == planVersion else { throw PlannerError.versionConflict }
+            state.plans.remove(at: index)
+            if let listIndex = state.lists.firstIndex(where: { $0.id == GuestStore.localID(stored.listId) }) { state.lists[listIndex].version += 1 }
         }
     }
     func addMember(accountID: UserID, to bookID: BookID) async throws -> BookDetail { throw gate(.sharing) }

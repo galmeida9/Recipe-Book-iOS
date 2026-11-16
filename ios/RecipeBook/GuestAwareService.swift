@@ -266,6 +266,58 @@ actor GuestAwareService: RecipeBookService {
     }
     func discardImport(id: ImportJobID) async throws { try await withCloud(.importing) { try await $0.discardImport(id: id) } }
     func accountDeletionBlockers() async throws -> [BookDetail] { try await withCloud(.account) { try await $0.accountDeletionBlockers() } }
+    func imageData(_ image: ImageRef) async throws -> Data {
+        if GuestStore.isLocal(image.id) {
+            try await requireLocalAccess()
+            return try await local.imageData(image)
+        }
+        return try await withCloud(.account) { try await $0.imageData(image) }
+    }
+    func readWeek(bookID: BookID, weekStart: PlanDate) async throws -> RecipeBookPresentation.WeeklyPlan? {
+        if GuestStore.isLocal(bookID) {
+            try await requireLocalAccess()
+            return try await local.readWeek(bookID: bookID, weekStart: weekStart)
+        }
+        return try await withCloud(.account) { try await $0.readWeek(bookID: bookID, weekStart: weekStart) }
+    }
+    func generateWeek(bookID: BookID, weekStart: PlanDate, dayStyles: [RecipeBookPresentation.MealStyle?],
+                      listID: ShoppingListID, expectedVersion: Int?) async throws -> RecipeBookPresentation.WeeklyPlan {
+        guard GuestStore.isLocal(bookID) == GuestStore.isLocal(listID) else {
+            throw guestFailure("Choose a shopping list with the same storage as this book.")
+        }
+        if GuestStore.isLocal(bookID) {
+            try await requireLocalAccess()
+            return try await local.generateWeek(bookID: bookID, weekStart: weekStart, dayStyles: dayStyles,
+                                                listID: listID, expectedVersion: expectedVersion)
+        }
+        return try await withCloud(.account) {
+            try await $0.generateWeek(bookID: bookID, weekStart: weekStart, dayStyles: dayStyles,
+                                     listID: listID, expectedVersion: expectedVersion)
+        }
+    }
+    func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
+                        planVersion: Int) async throws -> RecipeBookPresentation.WeeklyPlan {
+        if let replacement, GuestStore.isLocal(replacement.recipeID) != GuestStore.isLocal(bookID) {
+            throw guestFailure("Choose a recipe from this book and storage.")
+        }
+        if GuestStore.isLocal(bookID) {
+            try await requireLocalAccess()
+            return try await local.replacePlanDay(bookID: bookID, weekStart: weekStart, date: date,
+                                                   replacement: replacement, planVersion: planVersion)
+        }
+        return try await withCloud(.account) {
+            try await $0.replacePlanDay(bookID: bookID, weekStart: weekStart, date: date,
+                                       replacement: replacement, planVersion: planVersion)
+        }
+    }
+    func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws {
+        if GuestStore.isLocal(bookID) {
+            try await requireLocalAccess()
+            try await local.deleteWeek(bookID: bookID, weekStart: weekStart, planVersion: planVersion)
+            return
+        }
+        try await withCloud(.account) { try await $0.deleteWeek(bookID: bookID, weekStart: weekStart, planVersion: planVersion) }
+    }
     func deleteAccount(resolutions: [BookID: LastOwnerResolution]) async throws {
         try await withCloud(.account) { try await $0.deleteAccount(resolutions: resolutions) }
         try store.transaction { $0.mode = .none }

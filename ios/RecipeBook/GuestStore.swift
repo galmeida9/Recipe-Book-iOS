@@ -1,6 +1,8 @@
 import Foundation
 import RecipeBookCore
 import RecipeBookPresentation
+import ImageIO
+import UniformTypeIdentifiers
 
 func guestFailure(_ message: String, status: Int = 0, code: String = "client_state") -> APIError {
     APIError(status: status, code: code, message: message)
@@ -48,14 +50,21 @@ final class GuestStore: @unchecked Sendable {
         var steps: [Step]
         var sourceURL: URL?
         var evidenceText: String?
+        var mealStyle: RecipeBookCore.MealStyle?
+        var coverImageID: String?
         var coreDraft: RecipeBookCore.RecipeDraft {
-            .init(title: title, ingredients: ingredients.map(\.ingredient), steps: steps.map(\.text),
+            var draft = RecipeBookCore.RecipeDraft(title: title, ingredients: ingredients.map(\.ingredient), steps: steps.map(\.text),
                   servings: servings, totalMinutes: totalMinutes, sourceURL: sourceURL)
+            draft.mealStyle = mealStyle
+            // A device image is not an account-owned image. Copying covers requires a separate,
+            // explicit upload; never send a local reference as a cloud coverImageID.
+            return draft
         }
         func detail(identity: String) -> RecipeDetail {
             RecipeDetail(summary: RecipeSummary(id: id, bookID: bookID, title: title,
                          authorID: identity, authorName: "On this device", totalMinutes: totalMinutes,
-                         servings: servings), ingredients: ingredients.map(\.presentation),
+                         servings: servings, mealStyle: mealStyle.flatMap { RecipeBookPresentation.MealStyle(rawValue: $0.rawValue) },
+                         coverImage: coverImageID.map { ImageRef(id: $0) }, version: version), ingredients: ingredients.map(\.presentation),
                          steps: steps.map { RecipeStep(id: $0.id, text: $0.text) }, sourceURL: sourceURL)
         }
     }
@@ -93,6 +102,83 @@ final class GuestStore: @unchecked Sendable {
         var recipes: [Recipe] = []
         var lists: [List] = []
         var copies: [CopyRecord] = []
+        // Optional additive fields decode older envelopes without resetting any existing data.
+        var storedPlans: [StoredPlanResult]?
+        var imageBytes: [String: Data]?
+        var plans: [StoredPlanResult] {
+            get { storedPlans ?? [] }
+            set { storedPlans = newValue }
+        }
+        var images: [String: Data] {
+            get { imageBytes ?? [:] }
+            set { imageBytes = newValue }
+        }
+        func inventory() throws -> [PlannerRecipe] {
+            try recipes.filter { recipe in books.contains { $0.id == recipe.bookID } }.map {
+                PlannerRecipe(id: try GuestStore.uuid($0.id), bookId: try GuestStore.uuid($0.bookID),
+                              version: $0.version, mealStyle: $0.mealStyle,
+                              ingredients: $0.ingredients.map(\.ingredient), servings: $0.servings)
+            }
+        }
+        mutating func reconcilePlans() throws {
+            let inventory = try inventory()
+            var updated = plans
+            for index in updated.indices {
+                let old = updated[index]
+                let result = try CookingPlanner.reconcile(old.plan, recipes: inventory, previous: old.generated)
+                var plan = result.plan
+                if plan != old.plan || result.generated != old.generated {
+                    plan.version += 1
+                    if let listIndex = lists.firstIndex(where: { $0.id == GuestStore.localID(old.listId) }) {
+                        lists[listIndex].version += 1
+                    }
+                }
+                updated[index] = StoredPlanResult(plan: plan, generated: result.generated, listId: old.listId,
+                                                  warnings: result.warnings)
+            }
+            plans = updated
+        }
+        mutating func cleanImages() {
+            let retained = Set(recipes.compactMap(\.coverImageID))
+            images = images.filter { retained.contains($0.key) }
+        }
+        func shopping(_ list: List) -> RecipeBookPresentation.ShoppingList {
+            var result = list.presentation
+            for stored in plans where GuestStore.localID(stored.listId) == list.id {
+                let plan = stored.plan
+                for row in stored.generated {
+                    let titles = row.contributions.compactMap { contribution in
+                        recipes.first { $0.id == GuestStore.localID(contribution.recipeId) }?.title
+                    }
+                    let provenance = PlanProvenance(planID: GuestStore.localID(plan.id), bookID: GuestStore.localID(plan.bookId),
+                                                   weekStart: plan.weekStart, planVersion: plan.version,
+                                                   recipeTitles: Array(Set(titles)).sorted())
+                    result.items.append(.init(id: GuestStore.localID(row.id), name: row.ingredient.name,
+                                               quantity: row.ingredient.quantity, unit: row.ingredient.unit,
+                                               isBought: row.bought, origin: .generated(provenance)))
+                }
+            }
+            return result
+        }
+        func shoppingSummary(_ list: List) -> ShoppingListSummary {
+            let value = shopping(list)
+            return .init(id: value.id, name: value.name, remainingCount: value.items.filter { !$0.isBought }.count,
+                         totalCount: value.items.count)
+        }
+        func presentation(_ stored: StoredPlanResult) -> RecipeBookPresentation.WeeklyPlan {
+            let plan = stored.plan
+            return .init(id: GuestStore.localID(plan.id), bookID: GuestStore.localID(plan.bookId), weekStart: plan.weekStart,
+                         days: plan.days.map { day in
+                let slot = day.slot.map { slot in
+                    RecipeBookPresentation.PlanSlot(id: GuestStore.localID(slot.id), recipeID: GuestStore.localID(slot.recipeId),
+                                                    recipeVersion: slot.recipeVersion, servings: slot.servings,
+                                                    recipe: recipes.first { $0.id == GuestStore.localID(slot.recipeId) }?
+                                                        .detail(identity: identity).summary)
+                }
+                return RecipeBookPresentation.PlanDay(date: day.date,
+                    mealStyle: day.mealStyle.flatMap { RecipeBookPresentation.MealStyle(rawValue: $0.rawValue) }, slot: slot)
+            }, version: plan.version, warnings: stored.warnings.map(\.message), shoppingListID: GuestStore.localID(stored.listId))
+        }
         func summary(_ book: Book) -> BookSummary {
             .init(id: book.id, name: book.name, kind: .personal, myRole: .owner,
                   recipeCount: recipes.filter { $0.bookID == book.id }.count, memberCount: 1, storage: .onDevice)
@@ -114,6 +200,26 @@ final class GuestStore: @unchecked Sendable {
     }
     static func newID() -> String { "device-" + UUID().uuidString.lowercased() }
     static func isLocal(_ id: String) -> Bool { id.hasPrefix("device-") }
+    static func uuid(_ id: String) throws -> UUID {
+        guard isLocal(id), let uuid = UUID(uuidString: String(id.dropFirst("device-".count))) else {
+            throw guestFailure("Invalid on-device identifier.")
+        }
+        return uuid
+    }
+    static func localID(_ id: UUID) -> String { "device-" + id.uuidString.lowercased() }
+    static func validateJPEG(_ data: Data) throws {
+        guard !data.isEmpty, data.count <= 2 * 1024 * 1024,
+              let image = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let type = CGImageSourceGetType(image), type as String == UTType.jpeg.identifier,
+              CGImageSourceGetCount(image) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              (1...1600).contains(width), (1...1600).contains(height),
+              CGImageSourceCreateImageAtIndex(image, 0, [kCGImageSourceShouldCache: false] as CFDictionary) != nil else {
+            throw guestFailure("Choose a valid JPEG no larger than 1600 pixels per side and 2 MiB.", status: 400, code: "image")
+        }
+    }
     func read() throws -> State {
         Self.lock.lock()
         defer { Self.lock.unlock() }
