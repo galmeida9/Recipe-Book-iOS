@@ -15,9 +15,8 @@ export const draftSchema = z.object({
   servings: z.number().int().min(1).max(1000).nullable().default(null),
   totalMinutes: z.number().int().min(1).max(100_000).nullable().default(null),
   mealStyle: z.enum(["simple", "complicated", "full"]).nullable().default(null),
-  sourceURL: z.string().url().max(2048).nullable().default(null)
-  ,mealStyle: z.enum(["simple", "complicated", "full"]).nullable().default(null)
-  ,coverImageID: z.string().uuid().transform(value => value.toLowerCase()).nullable().default(null)
+  sourceURL: z.string().url().max(2048).nullable().default(null),
+  coverImageID: idSchema.nullable().default(null)
 }).strict();
 export const shoppingItemSchema = z.object({
   id: idSchema,

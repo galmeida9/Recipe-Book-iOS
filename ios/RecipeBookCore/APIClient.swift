@@ -63,8 +63,25 @@ public actor APIClient {
         return try await request("POST", "plans", body: Input(bookId: bookId, listId: listId, weekStart: start, dayStyles: styles), version: version)
     }
     public func replacePlanDay(bookId: UUID, start: String, date: String, recipeId: UUID?, recipeVersion: Int?, servings: Int?, version: Int) async throws -> StoredPlanResult {
-        struct Replacement: Encodable { let recipeId: UUID; let recipeVersion: Int; let servings: Int? }
-        struct Input: Encodable { let date: String; let replacement: Replacement? }
+        struct Replacement: Encodable {
+            let recipeId: UUID; let recipeVersion: Int; let servings: Int?
+            enum CodingKeys: String, CodingKey { case recipeId, recipeVersion, servings }
+            func encode(to encoder: Encoder) throws {
+                var values = encoder.container(keyedBy: CodingKeys.self)
+                try values.encode(recipeId, forKey: .recipeId)
+                try values.encode(recipeVersion, forKey: .recipeVersion)
+                try values.encode(servings, forKey: .servings)
+            }
+        }
+        struct Input: Encodable {
+            let date: String; let replacement: Replacement?
+            enum CodingKeys: String, CodingKey { case date, replacement }
+            func encode(to encoder: Encoder) throws {
+                var values = encoder.container(keyedBy: CodingKeys.self)
+                try values.encode(date, forKey: .date)
+                try values.encode(replacement, forKey: .replacement)
+            }
+        }
         var replacement: Replacement?
         if let recipeId {
             guard let recipeVersion else { throw APIError(status: 0, code: "recipe_version", message: "Reload the replacement recipe.") }
