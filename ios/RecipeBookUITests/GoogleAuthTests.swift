@@ -92,17 +92,17 @@ final class GoogleAuthTests: XCTestCase {
             OIDAuthorizationService.perform(request) { _, error in
                 continuation.resume(returning: (error as NSError?) ?? NSError(domain: "SyntheticUnexpectedSuccess", code: 0))
             }
-            func testMainAppSharedCredentialSetupDoesNotReplaceTheWorkingAppAuthSDKSession() {
-                let previous = OIDURLSessionProvider.session()
-                defer { OIDURLSessionProvider.setSession(previous) }
-                OIDURLSessionProvider.setSession(URLSession.shared)
-                SharedGoogleSession.configureNetworking()
-                XCTAssertTrue(OIDURLSessionProvider.session() === URLSession.shared)
-            }
         }
         XCTAssertEqual(failure.domain, OIDOAuthTokenErrorDomain, "Actual iOS transport must receive the OAuth response, not time out.")
         XCTAssertLessThan(Date().timeIntervalSince(start), 90)
         print("LIVE_AUTH_TRANSPORT: actual iOS AppAuth received the owned endpoint's expected inert-code OAuth rejection in \(Date().timeIntervalSince(start)) seconds; no customer identity or Google code was used.")
+    }
+    func testMainAppSharedCredentialSetupDoesNotReplaceTheWorkingAppAuthSDKSession() {
+        let previous = OIDURLSessionProvider.session()
+        defer { OIDURLSessionProvider.setSession(previous) }
+        OIDURLSessionProvider.setSession(URLSession.shared)
+        SharedGoogleSession.configureNetworking()
+        XCTAssertTrue(OIDURLSessionProvider.session() === URLSession.shared)
     }
     private func transportRequest() -> OIDTokenRequest {
         OIDTokenRequest(configuration: OIDServiceConfiguration(
