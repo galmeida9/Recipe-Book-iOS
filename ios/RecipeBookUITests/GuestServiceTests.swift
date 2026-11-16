@@ -495,6 +495,71 @@ final class GuestServiceTests: XCTestCase {
         XCTAssertNil(requests[1].value(forHTTPHeaderField: "X-Recipe-Account-ID"))
         XCTAssertNil(requests[1].value(forHTTPHeaderField: "Idempotency-Key"))
     }
+    func testCopyWithPhotosFailsExplicitlyBeforeJournalOrTransportAndPreservesOriginal() async throws {
+        let directory = try directory()
+        let factory = GuestFactoryProbe()
+        let copy = GuestCopyProbe()
+        let service = try service(directory, factory, copy: copy)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "With photos", kind: .personal)
+        let bytes = try jpeg()
+        let source = URL(string: "https://example.invalid/original")!
+        let recipe = try await service.saveRecipe(.init(bookID: book.id, title: "Original", sourceURL: source,
+            mealStyle: .full, coverImageEdit: .replace(jpegData: bytes)))
+        _ = try await service.signIn()
+        let file = directory.appendingPathComponent("guest-store.json")
+        let before = try Data(contentsOf: file)
+        do {
+            _ = try await service.copyLocalBookToAccount(id: book.id, kind: .shared)
+            XCTFail("Photo copying must fail explicitly, not strip the cover.")
+        } catch let error as APIError {
+            XCTAssertEqual(error.code, "local_copy_photos_unsupported")
+            XCTAssertTrue(error.message.contains("not supported yet"))
+        }
+        XCTAssertEqual(try Data(contentsOf: file), before)
+        let retained = try await service.recipe(id: recipe.id)
+        XCTAssertEqual(retained, recipe)
+        XCTAssertEqual(retained.sourceURL, source)
+        XCTAssertEqual(retained.summary.mealStyle, .full)
+        let photo = try XCTUnwrap(retained.summary.coverImage)
+        let retainedBytes = try await service.imageData(photo)
+        XCTAssertEqual(retainedBytes, bytes)
+        let operations = await copy.operations
+        XCTAssertTrue(operations.isEmpty)
+        XCTAssertTrue(try GuestStore(directory: directory).read().copies.isEmpty)
+    }
+    func testOldPhotoStrippedPendingCopyIsNotRetriedOrRewritten() async throws {
+        let directory = try directory()
+        let factory = GuestFactoryProbe()
+        let copy = GuestCopyProbe()
+        let service = try service(directory, factory, copy: copy)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "Legacy photo copy", kind: .personal)
+        let source = URL(string: "https://example.invalid/legacy")!
+        _ = try await service.saveRecipe(.init(bookID: book.id, title: "Original", sourceURL: source,
+            mealStyle: .simple, coverImageEdit: .replace(jpegData: jpeg())))
+        _ = try await service.signIn()
+        let key = UUID()
+        let store = try GuestStore(directory: directory)
+        try store.transaction { state in
+            let version = try XCTUnwrap(state.books.first(where: { $0.id == book.id })?.version)
+            let oldDraft = RecipeBookCore.RecipeDraft(title: "Original", ingredients: [], steps: [], sourceURL: source, mealStyle: .simple)
+            let oldOperation = LocalBookCopy(accountID: "account-one", localBookID: book.id, localVersion: version,
+                idempotencyKey: key, payload: .init(name: book.name, kind: .shared, recipes: [oldDraft]))
+            state.copies.append(.init(operation: oldOperation, result: nil))
+        }
+        let file = directory.appendingPathComponent("guest-store.json")
+        let before = try Data(contentsOf: file)
+        let reopened = try self.service(directory, factory, copy: copy)
+        do {
+            _ = try await reopened.copyLocalBookToAccount(id: book.id, kind: .shared)
+            XCTFail("An older photo-stripped journal must not bypass the guard.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "local_copy_photos_unsupported") }
+        XCTAssertEqual(try Data(contentsOf: file), before)
+        XCTAssertEqual(try store.read().copies[0].operation.idempotencyKey, key)
+        let operations = await copy.operations
+        XCTAssertTrue(operations.isEmpty)
+    }
     func testCopyTransportSurfacesAccountMismatchWithoutRetryOrFallback() async throws {
         GuestCopyHTTP.state.reset(status: 409)
         let configuration = URLSessionConfiguration.ephemeral

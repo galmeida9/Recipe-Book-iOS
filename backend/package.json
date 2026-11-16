@@ -17,6 +17,7 @@
     "@azure/storage-queue": "^12.26.0",
     "jose": "^6.0.11",
     "google-auth-library": "11.3.4",
+    "jpeg-js": "0.4.4",
     "mssql": "^11.0.1",
     "zod": "^3.24.2"
   },

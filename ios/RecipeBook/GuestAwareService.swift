@@ -332,14 +332,22 @@ actor GuestAwareService: RecipeBookService {
         let epoch = generation
         let record = try store.transaction { state in
             guard let book = state.books.first(where: { $0.id == id }) else { throw guestFailure("On-device book not found.", status: 404, code: "not_found") }
+            // Validate before reusing a journal entry: older versions could have omitted photos
+            // from a pending snapshot. Never silently resume that incomplete copy.
+            let recipes = try state.recipes.filter { $0.bookID == id }.sorted { $0.id < $1.id }.map { try $0.copyDraft() }
             let coreKind: RecipeBookCore.BookKind = kind == .shared ? .shared : .personal
             if let existing = state.copies.first(where: {
                 $0.operation.accountID == profile.id && $0.operation.localBookID == id
                     && $0.operation.localVersion == book.version && $0.operation.payload.kind == coreKind
-            }) { return existing }
+            }) {
+                guard existing.operation.payload.recipes.allSatisfy({ $0.coverImageID == nil }) else {
+                    throw guestPhotoCopyUnsupported()
+                }
+                return existing
+            }
             let operation = LocalBookCopy(accountID: profile.id, localBookID: id, localVersion: book.version,
                             idempotencyKey: UUID(), payload: .init(name: book.name, kind: coreKind,
-                            recipes: state.recipes.filter { $0.bookID == id }.sorted { $0.id < $1.id }.map(\.coreDraft)))
+                            recipes: recipes))
             let record = GuestStore.CopyRecord(operation: operation, result: nil)
             state.copies.append(record)
             return record

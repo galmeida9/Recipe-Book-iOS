@@ -1,0 +1,5 @@
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+ALTER TABLE dbo.ImportJobs ADD PipelineData nvarchar(max) NULL
+  CONSTRAINT CK_ImportJobs_Pipeline CHECK (PipelineData IS NULL OR ISJSON(PipelineData)=1);
+COMMIT TRANSACTION;

@@ -3,9 +3,10 @@ import type sql from "mssql";
 import { z } from "zod";
 import { AppError, assertVersion, canonicalReelURL, draftSchema, invariant, type ImportJob } from "./contracts.js";
 import { query, serializable } from "./database.js";
-import { account, bookAccess, RecipeBookService } from "./service.js";
-import { ApifyProvider, approvedProvider, type ProviderBudget } from "./apify.js";
-import { evidenceSchema, evidenceToReview } from "./import-evidence.js";
+import { account, bindCover, bookAccess, RecipeBookService } from "./service.js";
+import { type ProviderBudget } from "./apify.js";
+import { evidenceSchema } from "./import-evidence.js";
+import { ImportPipelineProvider, approvedPipeline, initialPipeline, pipelineSchema } from "./import-pipeline.js";
 import type { ImportDelivery } from "./queue.js";
 
 export function reserveBudget(spent: number, reserved: number, cap: number, amount: number): number {
@@ -19,12 +20,13 @@ interface JobRow {
   evidence: string | null; error: string | null; version: number; createdAt: Date;
   recipeId: string | null; bookId: string | null; budgetMonth: string; reservedMicros: number;
   providerRunId: string | null; dispatchStarted: boolean; dispatchStartedAt: Date | null; deadline: Date;
+  pipelineData: string | null;
 }
 const columns = `CONVERT(varchar(36),Id) AS id,CONVERT(varchar(36),UserId) AS userId,SourceURL AS sourceURL,
  State AS state,Draft AS draft,Evidence AS evidence,Error AS error,Version AS version,CreatedAt AS createdAt,
  CONVERT(varchar(36),CompletedRecipeId) AS recipeId,CONVERT(varchar(36),CompletedBookId) AS bookId,
  BudgetMonth AS budgetMonth,ReservedMicros AS reservedMicros,ProviderRunId AS providerRunId,
- DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline`;
+ DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline,PipelineData AS pipelineData`;
 function job(row: JobRow): ImportJob {
   return {
     id: row.id.toLowerCase(), sourceURL: row.sourceURL, state: row.state, version: row.version,
@@ -71,7 +73,7 @@ async function expireUndelivered(transaction: sql.Transaction, userId: string): 
 }
 
 export class ImportService {
-  constructor(private readonly service: RecipeBookService, private readonly provider = new ApifyProvider()) {}
+  constructor(private readonly service: RecipeBookService, private readonly provider = new ImportPipelineProvider()) {}
   list() {
     return this.service.execute(async (transaction, userId) => {
       await expireUndelivered(transaction, userId);
@@ -121,9 +123,9 @@ export class ImportService {
       await reserve(transaction, budget);
       const id = randomUUID();
       const deadline = new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime()));
-      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline)
-        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline)`,
-        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline });
+      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData)
+        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline)`,
+        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline, pipeline: JSON.stringify(initialPipeline()) });
       await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)", { userId, key, id, sourceURL });
       return job(await getJob(transaction, id, userId));
     });
@@ -133,15 +135,17 @@ export class ImportService {
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
       assertVersion(row.version, version);
-      invariant(row.state === "failed" && !row.dispatchStarted, 409, "retry_unsafe", "This job cannot be retried because a provider charge may already exist.");
+      invariant(row.state === "failed" && !row.dispatchStarted &&
+        (!row.pipelineData || pipelineSchema.parse(JSON.parse(row.pipelineData)).runs.length === 0),
+      409, "retry_unsafe", "This job cannot be retried because a provider charge may already exist.");
       const counts = await query<{ count: number }>(transaction,
         "SELECT COUNT(*) AS count FROM dbo.ImportJobs WHERE UserId=@userId AND State IN('queued','running')", { userId });
       invariant(counts[0]!.count < 3, 429, "import_limit", "At most three imports may be in progress.");
-      const config = approvedProvider();
+      const config = approvedPipeline();
       invariant(config.reserveMicros === row.reservedMicros, 409, "provider_changed", "The approved spending cap changed.");
       await reserve(transaction, budget);
-      await query(transaction, `UPDATE dbo.ImportJobs SET State='queued',Error=NULL,Version=Version+1,Deadline=@deadline WHERE Id=@id`,
-        { id, deadline: new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime())) });
+      await query(transaction, `UPDATE dbo.ImportJobs SET State='queued',Error=NULL,Version=Version+1,Deadline=@deadline,PipelineData=@pipeline WHERE Id=@id`,
+        { id, deadline: new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime())), pipeline: JSON.stringify(initialPipeline()) });
       await query(transaction, "UPDATE dbo.ImportJobs SET BudgetMonth=@month WHERE Id=@id", { id, month: budget.month });
       return job(await getJob(transaction, id, userId));
     });
@@ -161,12 +165,14 @@ export class ImportService {
       const row = await getJob(transaction, id, userId);
       assertVersion(row.version, version);
       invariant(row.state === "review", 409, "review_required", "This job is not ready for review.");
+      draft.sourceURL = row.sourceURL;
       await bookAccess(transaction, bookId, userId);
       const counts = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.Recipes WHERE BookId=@bookId", { bookId });
       invariant(counts[0]!.count < 1000, 409, "recipe_limit", "A book can contain at most 1000 recipes.");
       const recipeId = randomUUID();
       await query(transaction, "INSERT dbo.Recipes(Id,BookId,AuthorId,Draft) VALUES(@id,@bookId,@userId,@draft)",
         { id: recipeId, bookId, userId, draft: JSON.stringify(draft) });
+      await bindCover(transaction, userId, recipeId, draft.coverImageID);
       await query(transaction, `UPDATE dbo.ImportJobs SET State='completed',CompletedRecipeId=@recipeId,
         CompletedBookId=@bookId,Version=Version+1 WHERE Id=@id`, { id, recipeId, bookId });
       return { id: recipeId, bookId, authorId: userId, draft, version: 1 };
@@ -182,7 +188,7 @@ export async function importDelivery(id: string, expectedDeadline?: string): Pro
     return { id, deadline: row.deadline.toISOString() };
   });
 }
-export async function failImportDelivery(id: string, provider = new ApifyProvider(), expectedDeadline?: string): Promise<void> {
+export async function failImportDelivery(id: string, provider = new ImportPipelineProvider(), expectedDeadline?: string): Promise<void> {
   const row = await serializable(async transaction => (await query<JobRow>(transaction,
     `SELECT ${columns} FROM dbo.ImportJobs WHERE Id=@id AND State IN('queued','running')`, { id }))[0]);
   if (!row || (expectedDeadline !== undefined && row.deadline.toISOString() !== expectedDeadline)) return;
@@ -196,7 +202,7 @@ export async function failImportDelivery(id: string, provider = new ApifyProvide
   await finishImport(row, null, null, "Import queue delivery retries were exhausted. No new charged job was started.");
 }
 
-export async function processImport(id: string, provider = new ApifyProvider(), expectedDeadline?: string): Promise<void> {
+export async function processImport(id: string, provider = new ImportPipelineProvider(), expectedDeadline?: string): Promise<void> {
   const action = await serializable(async transaction => {
     const rows = await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id });
     const row = rows[0];
@@ -217,7 +223,9 @@ export async function processImport(id: string, provider = new ApifyProvider(), 
       if ((row.dispatchStartedAt?.getTime() ?? 0) < Date.now() - 60_000) return { kind: "ambiguous" as const, row };
       return null;
     }
-    approvedProvider();
+    approvedPipeline();
+    invariant(row.pipelineData, 409, "pipeline_missing", "This old import predates model-assisted extraction. It will not be automatically charged again.");
+    pipelineSchema.parse(JSON.parse(row.pipelineData));
     // Commit dispatch intent before the charged POST. A crash/timeout cannot
     // trigger another POST; unknown outcomes consume the full reservation.
     await query(transaction, `UPDATE dbo.ImportJobs SET DispatchStarted=1,DispatchStartedAt=SYSUTCDATETIME(),
@@ -240,7 +248,7 @@ export async function processImport(id: string, provider = new ApifyProvider(), 
   }
   if (action.kind === "start") {
     let run;
-    try { run = await provider.start(action.row.sourceURL, action.row.reservedMicros); }
+    try { run = await provider.startStage(action.row.sourceURL, pipelineSchema.parse(JSON.parse(action.row.pipelineData!)), action.row.reservedMicros); }
     catch (error) {
       await finishImport(action.row, null, null, "Provider dispatch failed or its result is unknown. No automatic retry was attempted.");
       throw error;
@@ -264,9 +272,23 @@ export async function processImport(id: string, provider = new ApifyProvider(), 
     return;
   }
   try {
-    const evidence = await provider.evidence(run);
-    const draft = evidenceToReview(evidence, action.row.sourceURL);
-    await finishImport(action.row, JSON.stringify(draft), JSON.stringify(evidence), null);
+    invariant(action.row.pipelineData, 409, "pipeline_missing", "The extraction stage is missing; no automatic provider retry is allowed.");
+    const pipeline = pipelineSchema.parse(JSON.parse(action.row.pipelineData));
+    const completed = await provider.completeStage(run, action.row.sourceURL, pipeline);
+    if (completed.next) {
+      completed.next.runs = [...pipeline.runs, run.id];
+      await serializable(async transaction => {
+        const current = (await query<JobRow>(transaction, `SELECT ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id`, { id }))[0];
+        if (!current || current.state !== "running" || current.providerRunId !== run.id ||
+          current.deadline.getTime() !== action.row.deadline.getTime()) return;
+        await query(transaction, `UPDATE dbo.ImportJobs SET PipelineData=@pipeline,Evidence=@evidence,
+          ProviderRunId=NULL,DispatchStarted=0,DispatchStartedAt=NULL,Version=Version+1 WHERE Id=@id`,
+        { id, pipeline: JSON.stringify(completed.next), evidence: JSON.stringify(completed.evidence) });
+      });
+    } else {
+      invariant(completed.review, 502, "extraction_missing", "The model did not return a validated editable draft.");
+      await finishImport(action.row, JSON.stringify(completed.review.draft), JSON.stringify(completed.evidence), null);
+    }
   } catch (error) {
     const message = error instanceof AppError ? error.message : "Provider evidence could not be validated. Review is unavailable.";
     await finishImport(action.row, null, null, message);

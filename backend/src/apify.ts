@@ -3,7 +3,7 @@ import { requiredSetting, invariant, AppError, type Evidence } from "./contracts
 import { evidenceSchema } from "./import-evidence.js";
 
 const safeId = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
-const runSchema = z.object({
+export const runSchema = z.object({
   id: safeId,
   status: z.enum(["READY", "RUNNING", "SUCCEEDED", "FAILED", "TIMING-OUT", "TIMED-OUT", "ABORTING", "ABORTED"]),
   defaultDatasetId: safeId,
@@ -38,7 +38,7 @@ export function approvedProvider(): { actor: string; build: string; reserveMicro
 
 export class ApifyProvider {
   constructor(private readonly transport: typeof fetch = fetch) {}
-  private async request(path: string, method = "GET", body?: unknown): Promise<unknown> {
+  protected async request(path: string, method = "GET", body?: unknown): Promise<unknown> {
     const response = await this.transport(`https://api.apify.com/v2/${path}`, {
       method,
       headers: { Authorization: `Bearer ${requiredSetting("APIFY_TOKEN")}`, "Content-Type": "application/json" },
@@ -64,6 +64,9 @@ export class ApifyProvider {
   }
   async budget(): Promise<ProviderBudget> {
     const config = approvedProvider();
+    return this.usageBudget(config.reserveMicros);
+  }
+  protected async usageBudget(reserveMicros: number): Promise<ProviderBudget> {
     const usage = usageSchema.parse(await this.request("users/me/usage/monthly")).data;
     const now = Date.now();
     const startsAt = new Date(usage.usageCycle.startAt);
@@ -74,7 +77,7 @@ export class ApifyProvider {
     return {
       month: usage.usageCycle.startAt.slice(0, 7),
       spentMicros: Math.ceil(usage.totalUsageCreditsUsdAfterVolumeDiscount * 1_000_000),
-      endsAt, capMicros: 4_750_000, reserveMicros: config.reserveMicros
+      endsAt, capMicros: 4_750_000, reserveMicros
     };
   }
   async start(sourceURL: string, reserveMicros: number): Promise<ProviderRun> {

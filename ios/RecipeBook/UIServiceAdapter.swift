@@ -220,7 +220,8 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
                 [
                     evidence.caption.map { "Caption:\n\($0)" },
                     evidence.comments.isEmpty ? nil : "Comments:\n" + evidence.comments.joined(separator: "\n\n"),
-                    evidence.transcript.map { "Transcript:\n\($0)" }
+                    evidence.transcript.map { "Transcript:\n\($0)" },
+                    evidence.warnings.map { "Review warnings:\n" + $0.joined(separator: "\n") }
                 ].compactMap { $0 }.joined(separator: "\n\n")
             }
         )
@@ -257,7 +258,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         let values = try await api.shoppingLists()
         guard let value = values.first(where: { $0.id == uuid }) else { throw notFound("Shopping list") }
         listCache[uuid] = value
-        return presentationList(value)
+        return try await presentationList(value)
     }
     func createShoppingList(name: String) async throws -> ShoppingListSummary {
         let value = try await api.createShoppingList(name: name)
@@ -301,7 +302,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         let list = try await cachedList(listID)
         let updated = try await api.addRecipeToShoppingList(list: list, recipeId: uuid, recipeVersion: recipe.version, alreadyHave: omitted)
         listCache[updated.id] = updated
-        return presentationList(updated)
+        return try await presentationList(updated)
     }
     func accountDeletionBlockers() async throws -> [BookDetail] {
         let summaries = try await books()
@@ -362,7 +363,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     private func replaceList(_ list: RecipeBookCore.ShoppingList, items: [RecipeBookCore.ShoppingItem]) async throws -> RecipeBookPresentation.ShoppingList {
         let updated = try await api.replaceShoppingItems(list: list, items: items)
         listCache[updated.id] = updated
-        return presentationList(updated)
+        return try await presentationList(updated)
     }
     private func coreDraft(_ value: RecipeBookPresentation.RecipeDraft) -> RecipeBookCore.RecipeDraft {
         RecipeBookCore.RecipeDraft(
@@ -407,7 +408,11 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         let generated = value.generated?.flatMap(\.items) ?? []
         return ShoppingListSummary(id: string(value.id), name: value.name, remainingCount: value.items.filter { !$0.bought }.count + generated.filter { !$0.bought }.count, totalCount: value.items.count + generated.count)
     }
-    private func presentationList(_ value: RecipeBookCore.ShoppingList) -> RecipeBookPresentation.ShoppingList {
+    private func presentationList(_ value: RecipeBookCore.ShoppingList) async throws -> RecipeBookPresentation.ShoppingList {
+        var currentRecipes: [UUID: RecipeBookCore.Recipe] = [:]
+        for bookID in Set((value.generated ?? []).map(\.bookId)) {
+            for recipe in try await api.recipes(bookId: bookID) { currentRecipes[recipe.id] = recipe }
+        }
         let manual = value.items.map {
             RecipeBookPresentation.ShoppingItem(id: string($0.id), name: $0.ingredient.name, quantity: $0.ingredient.quantity,
                                                unit: $0.ingredient.unit, isBought: $0.bought)
@@ -416,7 +421,12 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
             RecipeBookPresentation.ShoppingItem(id: string(item.id), name: item.ingredient.name, quantity: item.ingredient.quantity,
                 unit: item.ingredient.unit, isBought: item.bought,
                 origin: .generated(PlanProvenance(planID: string(section.planId), bookID: string(section.bookId),
-                    weekStart: section.weekStart, planVersion: section.planVersion, recipeTitles: [])))
+                    weekStart: section.weekStart, planVersion: section.planVersion, recipeTitles:
+                        Array(Set(item.contributions.compactMap { contribution in
+                            guard let recipe = currentRecipes[contribution.recipeId],
+                                  recipe.bookId == section.bookId, recipe.version == contribution.recipeVersion else { return nil }
+                            return recipe.draft.title
+                        })).sorted())))
         }}
         return RecipeBookPresentation.ShoppingList(id: string(value.id), name: value.name, items: manual + generated)
     }

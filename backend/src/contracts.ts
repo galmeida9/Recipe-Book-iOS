@@ -32,7 +32,7 @@ export type BookKind = "personal" | "shared";
 export interface Book { id: string; name: string; kind: BookKind; role: Role; version: number }
 export interface Recipe { id: string; bookId: string; authorId: string; draft: RecipeDraft; version: number }
 export interface ShoppingList { id: string; name: string; items: ShoppingItem[]; generated: GeneratedSection[]; version: number }
-export interface Evidence { caption: string | null; comments: string[]; transcript: string | null }
+export interface Evidence { caption: string | null; comments: string[]; transcript: string | null; warnings?: string[] | undefined }
 export type ImportState = "queued" | "running" | "review" | "failed" | "completed" | "discarded";
 export interface ImportJob {
   id: string;

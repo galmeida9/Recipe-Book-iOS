@@ -4,7 +4,8 @@ import { draftSchema, invariant, type Evidence, type RecipeDraft } from "./contr
 export const evidenceSchema = z.object({
   caption: z.string().max(40_000).nullable(),
   comments: z.array(z.string().max(10_000)).max(100),
-  transcript: z.string().max(100_000).nullable()
+  transcript: z.string().max(100_000).nullable(),
+  warnings: z.array(z.string().max(500)).max(100).optional()
 }).strict();
 
 export function evidenceToReview(evidence: Evidence, sourceURL: string): RecipeDraft {

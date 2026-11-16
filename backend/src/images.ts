@@ -1,10 +1,11 @@
 import { BlobServiceClient } from "@azure/storage-blob";
 import { DefaultAzureCredential } from "@azure/identity";
-import { invariant, requiredSetting } from "./contracts.js";
+import { AppError, invariant, requiredSetting } from "./contracts.js";
 import { query } from "./database.js";
 import { bookAccess, RecipeBookService } from "./service.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import jpeg from "jpeg-js";
 
 export function validateCoverJPEG(data: Buffer): void {
   invariant(data.length >= 12 && data.length <= 2_097_152 && data[0] === 0xff && data[1] === 0xd8 &&
@@ -29,6 +30,17 @@ export function validateCoverJPEG(data: Buffer): void {
   }
   invariant(false, 400, "invalid_cover", "JPEG dimensions were not supported.");
 }
+export function sanitizeCoverJPEG(data: Buffer): Buffer {
+  validateCoverJPEG(data);
+  let decoded: { width: number; height: number; data: Uint8Array };
+  try { decoded = jpeg.decode(data, { useTArray: true, tolerantDecoding: false, maxResolutionInMP: 2.56, maxMemoryUsageInMB: 64 }); }
+  catch { throw new AppError(400, "invalid_cover", "The JPEG could not be decoded within the cover-photo limits."); }
+  invariant(decoded.width <= 1600 && decoded.height <= 1600, 400, "invalid_cover", "Cover photos must be at most 1600 pixels per side.");
+  // Encode only pixel data: never retain uploaded EXIF/location/thumbnail data.
+  const encoded = jpeg.encode({ data: decoded.data, width: decoded.width, height: decoded.height }, 85).data;
+  invariant(encoded.length <= 2_097_152, 400, "invalid_cover", "The decoded cover photo exceeds 2 MiB.");
+  return encoded;
+}
 function privateBlobs() {
   const endpoint = new URL(requiredSetting("BLOB_SERVICE_URL"));
   invariant(endpoint.protocol === "https:" && endpoint.hostname.endsWith(".blob.core.windows.net") &&
@@ -37,19 +49,24 @@ function privateBlobs() {
 }
 export async function uploadRecipeImage(service: RecipeBookService, input: unknown) {
   const { jpegBase64 } = z.object({ jpegBase64: z.string().max(2_796_204) }).strict().parse(input);
-  const data = Buffer.from(jpegBase64, "base64");
-  invariant(data.toString("base64") === jpegBase64, 400, "invalid_cover", "Send canonical JPEG base64.");
-  validateCoverJPEG(data);
-  return service.execute(async (transaction, userId) => {
+  const inputData = Buffer.from(jpegBase64, "base64");
+  invariant(inputData.toString("base64") === jpegBase64, 400, "invalid_cover", "Send canonical JPEG base64.");
+  const data = sanitizeCoverJPEG(inputData);
+  const id = randomUUID();
+  const blobName = "covers/" + id + ".jpg";
+  await service.execute(async (transaction, userId) => {
     const limits = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.RecipeImages WITH(UPDLOCK,HOLDLOCK) WHERE OwnerId=@userId", { userId });
     invariant(limits[0]!.count < 500, 409, "image_limit", "This account has reached its cover-photo limit.");
-    const id = randomUUID();
-    const blobName = "covers/" + id + ".jpg";
-    await privateBlobs().getBlockBlobClient(blobName).uploadData(data, { blobHTTPHeaders: { blobContentType: "image/jpeg" }, conditions: { ifNoneMatch: "*" } });
+    const budget = await query(transaction, `UPDATE dbo.Accounts SET CoverUploads=CoverUploads+1 OUTPUT inserted.Id
+      WHERE Id=@userId AND CoverUploads<500`, { userId });
+    invariant(budget.length === 1, 409, "image_limit", "This account's trial cover-upload allowance is exhausted. Failed uploads also consume this bounded storage allowance.");
     await query(transaction, "INSERT dbo.RecipeImages(Id,RecipeId,OwnerId,BlobName,ContentType,SizeBytes) VALUES(@id,NULL,@userId,@blobName,'image/jpeg',@size)",
       { id, userId, blobName, size: data.length });
-    return { id };
   });
+  // Persist the reservation before external I/O. A database retry cannot create
+  // untracked blobs; failed/unknown uploads retain their quota reservation.
+  await privateBlobs().getBlockBlobClient(blobName).uploadData(data, { blobHTTPHeaders: { blobContentType: "image/jpeg" }, conditions: { ifNoneMatch: "*" } });
+  return { id };
 }
 
 export async function readRecipeImage(service: RecipeBookService, id: string) {

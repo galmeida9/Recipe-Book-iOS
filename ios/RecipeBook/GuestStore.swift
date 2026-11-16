@@ -8,6 +8,11 @@ func guestFailure(_ message: String, status: Int = 0, code: String = "client_sta
     APIError(status: status, code: code, message: message)
 }
 
+func guestPhotoCopyUnsupported() -> APIError {
+    guestFailure("Copying books with photos is not supported yet. Your on-device book, recipes and photos have not been changed.",
+                 code: "local_copy_photos_unsupported")
+}
+
 /// The copy transport must POST this exact payload with `idempotencyKey` as Idempotency-Key.
 /// It must use the authenticated account identified by accountID, not whichever account is current later.
 struct LocalBookCopy: Codable, Sendable {
@@ -52,12 +57,11 @@ final class GuestStore: @unchecked Sendable {
         var evidenceText: String?
         var mealStyle: RecipeBookCore.MealStyle?
         var coverImageID: String?
-        var coreDraft: RecipeBookCore.RecipeDraft {
+        func copyDraft() throws -> RecipeBookCore.RecipeDraft {
+            guard coverImageID == nil else { throw guestPhotoCopyUnsupported() }
             var draft = RecipeBookCore.RecipeDraft(title: title, ingredients: ingredients.map(\.ingredient), steps: steps.map(\.text),
                   servings: servings, totalMinutes: totalMinutes, sourceURL: sourceURL)
             draft.mealStyle = mealStyle
-            // A device image is not an account-owned image. Copying covers requires a separate,
-            // explicit upload; never send a local reference as a cloud coverImageID.
             return draft
         }
         func detail(identity: String) -> RecipeDetail {

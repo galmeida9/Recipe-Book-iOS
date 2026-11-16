@@ -71,6 +71,7 @@ public struct ImportEvidence: Codable, Sendable {
     public let caption: String?
     public let comments: [String]
     public let transcript: String?
+    public let warnings: [String]?
 }
 
 public struct ImportJob: Codable, Identifiable, Sendable {

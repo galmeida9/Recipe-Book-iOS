@@ -134,8 +134,12 @@ services, selected region, SQL SKU, Flex Consumption support and complete monthl
 estimate before any deployment. Never remove spending limits, upgrade billing,
 or assume Azure credits cover third-party usage.
 
-`infrastructure/main.bicep` uses Flex Consumption Node 24, one maximum 512 MiB
-instance with no always-ready instances, SQL General Purpose serverless Gen5
+`infrastructure/main.bicep` uses Flex Consumption Node 24, maximum one 512 MiB
+instance **per independently scaling function group** (HTTP and queue groups can
+each have an instance), with no always-ready instances. This is not an app-wide
+single-instance or monetary cap; subscription spending limits and import
+reservations remain mandatory. See the [Flex maximum-instance documentation](https://learn.microsoft.com/en-us/azure/azure-functions/flex-consumption-plan#maximum-instance-count-the-ceiling).
+SQL uses General Purpose serverless Gen5
 2 vCore/0.5 minimum/60-minute idle pause, private Blob containers, queues and a
 user-assigned managed identity. SQL explicitly sets `useFreeLimit=true` and
 `freeLimitExhaustionBehavior=AutoPause`; never omit these or fall back to

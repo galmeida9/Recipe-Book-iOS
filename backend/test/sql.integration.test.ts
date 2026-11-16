@@ -7,7 +7,9 @@ import { googleIssuer } from "../src/auth.js";
 import { SQLFlowStore } from "../src/oauth.js";
 import { AppError } from "../src/contracts.js";
 import { ImportService, processImport, importDelivery, failImportDelivery } from "../src/imports.js";
-import { ApifyProvider, type ProviderBudget, type ProviderRun } from "../src/apify.js";
+import { type ProviderBudget, type ProviderRun } from "../src/apify.js";
+import { ImportPipelineProvider, type Pipeline } from "../src/import-pipeline.js";
+import { validateExtraction } from "../src/recipe-extraction.js";
 import { readRecipeImage } from "../src/images.js";
 
 const enabled = process.env["RUN_SQL_INTEGRATION"] === "true";
@@ -108,19 +110,29 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   let activeBudgetMonth = budgetMonth;
   let starts = 0;
   let succeeded = false;
-  class FixtureProvider extends ApifyProvider {
+  class FixtureProvider extends ImportPipelineProvider {
     override async budget(): Promise<ProviderBudget> {
       return { month: activeBudgetMonth, spentMicros: 0, capMicros: 250_000, reserveMicros: 100_000, endsAt: new Date(Date.now() + 3_600_000) };
     }
-    override async start(): Promise<ProviderRun> {
+    override async startStage(_sourceURL: string, pipeline: Pipeline): Promise<ProviderRun> {
       starts++;
       await new Promise(resolve => setTimeout(resolve, 50));
-      return { id: "fixture-run", status: "RUNNING", defaultDatasetId: "fixture-dataset", options: { maxTotalChargeUsd: 0.1, isMaxTotalChargeUsdSetByUser: true } };
+      return { id: "fixture-" + pipeline.stage, status: "RUNNING", defaultDatasetId: "fixture-dataset", options: { maxTotalChargeUsd: 0.04, isMaxTotalChargeUsdSetByUser: true } };
     }
-    override async run(): Promise<ProviderRun> {
-      return { id: "fixture-run", status: succeeded ? "SUCCEEDED" : "RUNNING", defaultDatasetId: "fixture-dataset", options: { maxTotalChargeUsd: 0.1, isMaxTotalChargeUsdSetByUser: true } };
+    override async run(id: string): Promise<ProviderRun> {
+      return { id, status: succeeded ? "SUCCEEDED" : "RUNNING", defaultDatasetId: "fixture-dataset", options: { maxTotalChargeUsd: 0.04, isMaxTotalChargeUsdSetByUser: true } };
     }
-    override async evidence() { return { caption: "Soup\nIngredients:\n100 g carrots\n\nMethod:\nSimmer", comments: [], transcript: null }; }
+    override async completeStage(_run: ProviderRun, sourceURL: string, pipeline: Pipeline) {
+      const evidence = { caption: "100 g carrots; Simmer carrots.", comments: [], transcript: "Simmer carrots." };
+      const next = pipeline.stage === "metadata" ? { ...pipeline, stage: "audio" as const, evidence }
+        : pipeline.stage === "audio" ? { ...pipeline, stage: "model" as const, evidence } : null;
+      const review = next ? null : validateExtraction({
+        title: "Carrots", source_url: sourceURL, servings: null, total_minutes: null, requires_review: true, warnings: [],
+        ingredients: [{ name: "carrots", quantity: 100, unit: "g", notes: null, evidence_ids: ["C0"] }],
+        steps: [{ instruction: "Simmer carrots.", duration_minutes_min: null, duration_minutes_max: null, temperature_c: null, evidence_ids: ["C0"] }]
+      }, sourceURL, [{ id: "C0", kind: "caption", text: evidence.caption }]);
+      return { next, evidence, review };
+    }
   }
   const provider = new FixtureProvider();
   try {
@@ -176,8 +188,9 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
 
     Object.assign(process.env, {
       APIFY_ENABLED: "true", APIFY_FREE_PLAN_VERIFIED: "true", APIFY_NO_OVERAGES_VERIFIED: "true",
-      APIFY_ACCOUNT_EXCLUSIVE: "true", APIFY_ACTOR_ID: "fixture~actor", APIFY_ACTOR_BUILD: "1.2.3",
-      APIFY_RUN_CAP_MICROS: "100000", APIFY_INPUT_URL_FIELD: "urls"
+      APIFY_ACCOUNT_EXCLUSIVE: "true", APIFY_PIPELINE_TERMS_VERIFIED: "true", APIFY_PIPELINE_PRICING_VERIFIED: "true",
+      APIFY_METADATA_BUILD: "1.2.3", APIFY_AUDIO_BUILD: "1.2.3", APIFY_MODEL_BUILD: "1.2.3",
+      APIFY_METADATA_CAP_MICROS: "30000", APIFY_AUDIO_CAP_MICROS: "40000", APIFY_MODEL_CAP_MICROS: "30000"
     });
     const imports = new ImportService(alice, provider);
     const outsiderImports = new ImportService(outsider, provider);
@@ -193,14 +206,14 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     assert.equal(starts, 1, "Concurrent delivery must perform one charged dispatch.");
     assert.equal((await imports.get(importJob.id)).state, "running");
     succeeded = true;
-    await processImport(importJob.id, provider);
+    for (let stage = 0; stage < 5; stage++) await Promise.all([processImport(importJob.id, provider), processImport(importJob.id, provider)]);
     const review = await imports.get(importJob.id);
     assert.equal(review.state, "review");
     assert.equal(review.draft!.ingredients[0]!.quantity, "100");
     const approved = await imports.approve(importJob.id, shared.id, review.draft, review.version);
     assert.equal((await imports.get(importJob.id)).recipeId, approved.id);
     assert.equal((await imports.create({ sourceURL: "https://www.instagram.com/reel/Fixture1/" }, key)).state, "completed");
-    assert.equal(starts, 1);
+    assert.equal(starts, 3, "Concurrent stage transitions never duplicate a charged POST.");
     await assert.rejects(() => imports.create({ sourceURL: "https://www.instagram.com/reel/Fixture3/" }, randomUUID()),
       (error: unknown) => error instanceof AppError && error.code === "budget_exhausted");
     await serializable(async transaction => {
@@ -211,7 +224,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     await processImport(secondJob.id, provider, expiredDelivery.deadline);
     const failed = await imports.get(secondJob.id);
     assert.equal(failed.state, "failed");
-    assert.equal(starts, 1);
+    assert.equal(starts, 3);
     await assert.rejects(() => imports.retry(secondJob.id, failed.version),
       (error: unknown) => error instanceof AppError && error.code === "budget_exhausted");
     const budget = await serializable(transaction => query<{ spent: number; reserved: number }>(transaction,
@@ -224,17 +237,17 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     await failImportDelivery(secondJob.id, provider, expiredDelivery.deadline);
     assert.equal((await imports.get(secondJob.id)).state, "queued", "Stale deliveries and poison cannot mutate a new attempt.");
     assert.equal(await importDelivery(secondJob.id, expiredDelivery.deadline), null);
-    assert.equal(starts, 1, "A stale attempt cannot start another charged run.");
+    assert.equal(starts, 3, "A stale attempt cannot start another charged run.");
     const retryDelivery = (await importDelivery(secondJob.id))!;
     await processImport(secondJob.id, provider, retryDelivery.deadline);
-    assert.equal(starts, 2);
-    await processImport(secondJob.id, provider, retryDelivery.deadline);
+    assert.equal(starts, 4);
+    for (let stage = 0; stage < 5; stage++) await processImport(secondJob.id, provider, retryDelivery.deadline);
     assert.equal((await imports.get(secondJob.id)).state, "review");
     const undelivered = await imports.create({ sourceURL: "https://www.instagram.com/reel/Undelivered/" }, randomUUID());
     await serializable(transaction => query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
       { id: undelivered.id, deadline: new Date(Date.now() - 1000) }));
     assert.equal((await imports.get(undelivered.id)).state, "failed", "An expired queue message must not leave a job queued forever.");
-    assert.equal(starts, 2, "Lazy expiry does not restart or call the provider.");
+    assert.equal(starts, 6, "Lazy expiry does not restart or call the provider.");
     const retryBudget = await serializable(transaction => query<{ spent: number; reserved: number }>(transaction,
       "SELECT SpentMicros AS spent,ReservedMicros AS reserved FROM dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth }));
     assert.deepEqual(retryBudget[0], { spent: 200_000, reserved: 0 });

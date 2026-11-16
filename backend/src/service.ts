@@ -84,7 +84,7 @@ async function createStoredBook(transaction: sql.Transaction, userId: string, bo
   await query(transaction, "INSERT dbo.Memberships(BookId,UserId,Role) VALUES(@id,@userId,'owner')", { id, userId });
   return { id, ...body, role: "owner", version: 1 };
 }
-async function bindCover(transaction: sql.Transaction, userId: string, recipeId: string, imageId: string | null) {
+export async function bindCover(transaction: sql.Transaction, userId: string, recipeId: string, imageId: string | null) {
   if (!imageId) return;
   const rows = await query(transaction, `UPDATE dbo.RecipeImages WITH(UPDLOCK,HOLDLOCK) SET RecipeId=@recipeId
     OUTPUT inserted.Id WHERE Id=@imageId AND ((RecipeId IS NULL AND OwnerId=@userId) OR RecipeId=@recipeId)`,
@@ -261,6 +261,7 @@ export class RecipeBookService {
       const book = await bookAccess(transaction, bookId, userId);
       if (id) {
         const existing = await getRecipe(transaction, bookId, id);
+        if (existing.draft.sourceURL) draft.sourceURL = existing.draft.sourceURL;
         invariant(canEditRecipe(book.role, userId, existing.authorId), 403, "recipe_author", "Only the contributor or a book owner can edit this recipe.");
         assertVersion(existing.version, version!);
         await bindCover(transaction, userId, id, draft.coverImageID);

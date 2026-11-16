@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 final class PreviewCaptureTests: XCTestCase {
     @MainActor
@@ -27,7 +28,27 @@ final class PreviewCaptureTests: XCTestCase {
             if screen == "recipe-detail" || screen == "shopping" {
                 XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Tomatoes")).firstMatch.waitForExistence(timeout: 15))
             }
-            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            let original = app.screenshot().image
+            var preview: Data?
+            for width in [600.0, 480.0, 360.0, 300.0] {
+                let size = CGSize(width: width, height: original.size.height * width / original.size.width)
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = 1
+                format.opaque = true
+                let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+                    original.draw(in: CGRect(origin: .zero, size: size))
+                }
+                if let data = image.pngData(), data.count <= 200 * 1024 {
+                    preview = data
+                    break
+                }
+            }
+            guard let preview else {
+                XCTFail("Fixture preview could not fit the existing bounded screenshot transfer.")
+                app.terminate()
+                return
+            }
+            let screenshot = XCTAttachment(data: preview, uniformTypeIdentifier: "public.png")
             screenshot.name = "Fixture-preview-" + screen
             screenshot.lifetime = .keepAlways
             add(screenshot)
