@@ -44,6 +44,7 @@ struct PlanView: View {
     @State private var bookDetail: BookDetail?
     @State private var reloadBooks = 0
     @State private var reloadPlan = 0
+    @State private var loadedPlanScope: PlanKey?
     @State private var showingGenerate = false
     @State private var dayToReplace: PlanDay?
     @State private var confirmDelete = false
@@ -74,8 +75,11 @@ struct PlanView: View {
         }
         .task(id: reloadBooks) { await loadBooks() }
         .task(id: PlanKey(bookID: selectedBook?.id, weekStart: weekStart, reload: reloadPlan)) {
-            plan = .loading
+            // A different book or week starts fresh; a plain refresh keeps the plan on screen.
+            let scope = PlanKey(bookID: selectedBook?.id, weekStart: weekStart, reload: 0)
+            if scope != loadedPlanScope { plan = .loading }
             await loadPlan()
+            if plan.value != nil { loadedPlanScope = scope }
         }
         .errorAlert($runner.errorMessage)
     }
@@ -265,7 +269,11 @@ struct PlanView: View {
         do {
             books = .loaded(try await service.books())
         } catch let error where !error.isCancellation {
-            books = .failed(error.localizedDescription)
+            if books.value == nil {
+                books = .failed(error.localizedDescription)
+            } else {
+                runner.errorMessage = error.localizedDescription
+            }
         } catch {}
     }
 
@@ -277,7 +285,11 @@ struct PlanView: View {
             plan = .loaded(try await week)
             bookDetail = try? await detail
         } catch let error where !error.isCancellation {
-            plan = .failed(error.localizedDescription)
+            if plan.value == nil {
+                plan = .failed(error.localizedDescription)
+            } else {
+                runner.errorMessage = error.localizedDescription
+            }
         } catch {}
     }
 }

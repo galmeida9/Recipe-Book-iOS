@@ -121,7 +121,11 @@ struct ShoppingListView: View {
             do {
                 state = .loaded(try await service.shoppingList(id: listID))
             } catch let error where !error.isCancellation {
-                state = .failed(error.localizedDescription)
+                if state.value == nil {
+                    state = .failed(error.localizedDescription)
+                } else {
+                    errorMessage = error.localizedDescription
+                }
             } catch {}
         }
         .errorAlert($errorMessage)
@@ -353,8 +357,8 @@ struct AccountView: View {
                     Text("Measurements")
                 } footer: {
                     Text(unitSystem == .automatic
-                         ? "Follows your region (now \(UnitSystem.automatic.resolved(for: .current).title.lowercased())). Weights in the other system are shown converted and marked ≈. Recipes keep their original amounts."
-                         : "Weights in the other system are shown converted and marked ≈. Recipes keep their original amounts.")
+                         ? "Follows your region (now \(UnitSystem.automatic.resolved(for: .current).title.lowercased())). Weights, volumes named as US or UK, and °C/°F in steps are shown converted and marked ≈. Imperial volumes use US measures; plain cups and fl oz stay as written. Recipes keep their original amounts."
+                         : "Weights, volumes named as US or UK, and °C/°F in steps are shown converted and marked ≈. Imperial volumes use US measures; plain cups and fl oz stay as written. Recipes keep their original amounts.")
                 }
                 Section("About") {
                     Label("Suggestions use only recipes saved in your books.", systemImage: "lock.shield")

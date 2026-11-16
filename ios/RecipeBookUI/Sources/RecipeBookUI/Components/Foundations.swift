@@ -80,12 +80,10 @@ enum LoadState<Value> {
 }
 
 extension Error {
-    /// Cancellation is a normal outcome of leaving a screen, not an error to show.
-    var isCancellation: Bool {
-        if self is CancellationError { return true }
-        if let url = self as? URLError, url.code == .cancelled { return true }
-        return false
-    }
+    /// Cancellation is a normal outcome of leaving a screen, not an error to show. Only the
+    /// current task being cancelled counts: a request cancelled underneath a live screen (timeout,
+    /// invalidated session) must surface as a failure, never leave the screen loading forever.
+    var isCancellation: Bool { Task.isCancelled }
 }
 
 /// Runs one user-initiated async action at a time: prevents double submits, surfaces errors
@@ -106,7 +104,7 @@ final class ActionRunner {
         task = Task { [weak self] in
             do {
                 try await operation()
-            } catch let error where error.isCancellation || Task.isCancelled {
+            } catch where Task.isCancelled {
                 // Leaving the screen or tapping Cancel is not a failure.
             } catch {
                 self?.errorMessage = error.localizedDescription

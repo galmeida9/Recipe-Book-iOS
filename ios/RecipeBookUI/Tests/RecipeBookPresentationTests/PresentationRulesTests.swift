@@ -392,26 +392,36 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertNil(job("x", .failed(reason: "r", canRetry: false)).retryReason)
     }
 
-    func testFirstOpenAcknowledgesBeforeLoadingAndReopenOnlyLoads() async throws {
+    func testFirstOpenAcknowledgesAlongsideLoadingAndReopenOnlyLoads() async throws {
         actor Calls { var log: [String] = []; func add(_ s: String) { log.append(s) } }
         let url = URL(string: "https://www.instagram.com/reel/A/")!
         var job = ImportJob(id: "j", sourceURL: url, status: .reviewRequired, createdAt: Date(), bookID: "a", isUnseen: true)
         let calls = Calls()
         let draft = RecipeDraft(bookID: "a", title: "Soup")
 
-        let first = try await ImportReviewOpening.load(job, markSeen: { await calls.add("seen \($0)") },
-                                                       review: { await calls.add("review \($0)"); return draft })
-        XCTAssertEqual(first, draft)
-        let firstLog = await calls.log
-        XCTAssertEqual(firstLog, ["seen j", "review j"], "Save must use the job after the seen acknowledgement")
+        let ack = ImportReviewOpening.acknowledge(job, markSeen: { await calls.add("seen \($0)") })
+        XCTAssertNotNil(ack)
+        await ack?.value
+        let ackLog = await calls.log
+        XCTAssertEqual(ackLog, ["seen j"])
 
-        // Cancelled review: the draft is now seen, sits in Recipes as Needs Review, and reopens.
+        // A slow acknowledgement never holds up the review.
+        let started = Date()
+        let first = try await ImportReviewOpening.load(job, markSeen: { _ in try await Task.sleep(for: .seconds(30)) },
+                                                       review: { _ in draft })
+        XCTAssertEqual(first, draft)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+
+        // Cancelled review: the draft is now seen, sits in Recipes as Needs Review, and reopens
+        // without another acknowledgement.
         job.isUnseen = false
         XCTAssertEqual(BookImportSections(cards: [job]).needsReview.map(\.id), ["j"])
-        _ = try await ImportReviewOpening.load(job, markSeen: { await calls.add("seen \($0)") },
-                                               review: { await calls.add("review \($0)"); return draft })
+        XCTAssertNil(ImportReviewOpening.acknowledge(job, markSeen: { await calls.add("seen \($0)") }))
+        let reopened = try await ImportReviewOpening.load(job, markSeen: { await calls.add("seen \($0)") },
+                                                          review: { _ in draft })
+        XCTAssertEqual(reopened, draft)
         let reopenLog = await calls.log
-        XCTAssertEqual(reopenLog, ["seen j", "review j", "review j"])
+        XCTAssertEqual(reopenLog, ["seen j"])
 
         // A failed acknowledgement doesn't block reviewing.
         job.isUnseen = true
@@ -435,13 +445,30 @@ final class PresentationRulesTests: XCTestCase {
             MeasurementDisplay.display(quantity: q, unit: u, system: s, locale: Locale(identifier: "nb_NO"))
         }
         XCTAssertEqual(show("8", "oz", .metric), "≈ 227 g")
-        XCTAssertEqual(show("3", "lb", .metric), "≈ 1.36 kg")
+        XCTAssertEqual(show("3", "lb", .metric), "≈ 1,36 kg", "Converted values use the viewer's decimal comma")
         XCTAssertEqual(show("2", "pounds", .automatic), "≈ 907 g")
-        XCTAssertEqual(show("250", "g", .imperial), "≈ 8.8 oz")
-        XCTAssertEqual(show("1", "kg", .imperial), "≈ 2.2 lb")
-        // Same system: shown exactly as written, never rescaled.
+        XCTAssertEqual(show("250", "g", .imperial), "≈ 8,8 oz")
+        XCTAssertEqual(show("1", "kg", .imperial), "≈ 2,2 lb")
+        XCTAssertEqual(MeasurementDisplay.display(quantity: "3", unit: "lb", system: .metric,
+                                                  locale: Locale(identifier: "en_US")), "≈ 1.36 kg")
+        // Same system: shown exactly as written, never rescaled or reformatted.
         XCTAssertEqual(show("1500", "g", .metric), "1500 g")
+        XCTAssertEqual(show("1.5", "kg", .metric), "1.5 kg")
         XCTAssertEqual(show("1 1/2", "lb", .imperial), "1 1/2 lb")
+    }
+
+    func testOnlyStandardNamedVolumesConvertAndImperialUsesUSMeasures() {
+        func show(_ q: String?, _ u: String?, _ s: UnitSystem) -> String? {
+            MeasurementDisplay.display(quantity: q, unit: u, system: s, locale: Locale(identifier: "en_US"))
+        }
+        XCTAssertEqual(show("200", "ml", .imperial), "≈ 6.8 US fl oz")
+        XCTAssertEqual(show("5", "dl", .imperial), "≈ 2.11 US cups")
+        XCTAssertEqual(show("236.6", "ml", .imperial), "≈ 1 US cup")
+        XCTAssertEqual(show("2", "US cups", .metric), "≈ 473 ml")
+        XCTAssertEqual(show("1", "UK pint", .metric), "≈ 568 ml")
+        XCTAssertEqual(show("4", "US fl oz", .metric), "≈ 118 ml")
+        XCTAssertEqual(show("1", "UK fl oz", .metric), "≈ 28 ml", "UK and US fluid ounces differ")
+        XCTAssertEqual(show("1", "UK pint", .imperial), "1 UK pint", "Shown as written in its own system")
     }
 
     func testAmbiguousCountAndUnknownUnitsAreNeverConverted() {
@@ -450,7 +477,7 @@ final class PresentationRulesTests: XCTestCase {
         }
         XCTAssertEqual(show("1", "cup", .metric), "1 cup", "No US/UK cup assumption and no density guess")
         XCTAssertEqual(show("4", "fl oz", .metric), "4 fl oz")
-        XCTAssertEqual(show("200", "ml", .imperial), "200 ml", "Imperial volumes differ between US and UK")
+        XCTAssertEqual(show("1", "pint", .metric), "1 pint")
         XCTAssertEqual(show("2", "tbsp", .metric), "2 tbsp")
         XCTAssertEqual(show("3", "cloves", .metric), "3 cloves")
         XCTAssertEqual(show("1", "knob", .metric), "1 knob")
@@ -458,17 +485,31 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertNil(show(nil, "g", .metric), "Unknown amounts are never invented")
     }
 
+    func testStepTemperaturesShowBothScalesAndLeaveOtherNumbersAlone() {
+        let metric = UnitSystem.metric, imperial = UnitSystem.imperial
+        XCTAssertEqual(MeasurementDisplay.stepText("Bake at 350°F for 20 minutes.", system: metric),
+                       "Bake at 350°F (≈ 177 °C) for 20 minutes.")
+        XCTAssertEqual(MeasurementDisplay.stepText("Heat the oven to 200 °C, then 180°C.", system: imperial),
+                       "Heat the oven to 200 °C (≈ 392 °F), then 180°C (≈ 356 °F).")
+        XCTAssertEqual(MeasurementDisplay.stepText("Bake at 200 °C.", system: metric), "Bake at 200 °C.")
+        XCTAssertEqual(MeasurementDisplay.stepText("Bake at 200 degrees for 3 min, step 2.", system: imperial),
+                       "Bake at 200 degrees for 3 min, step 2.", "No degree sign, no guess")
+        XCTAssertEqual(MeasurementDisplay.stepText("See https://x.example/a350F", system: metric),
+                       "See https://x.example/a350F")
+    }
+
     func testUnitPickerOffersKnownUnitsAndKeepsAnyOtherSourceUnit() {
         let none = MeasurementDisplay.pickerOptions(current: nil)
         XCTAssertNil(none.retainedSourceUnit)
         XCTAssertEqual(none.groups.map(\.kind), [.weight, .volume, .count])
-        XCTAssertEqual(none.groups[0].units.map(\.symbol), ["g", "kg"])
+        XCTAssertEqual(none.groups[0].units.map(\.symbol), ["g", "kg", "oz", "lb"], "Imperial weights can be picked")
         XCTAssertTrue(none.groups[1].units.map(\.symbol).contains("tbsp"))
+        XCTAssertTrue(none.groups[1].units.map(\.symbol).contains("US cup"))
+        XCTAssertFalse(none.groups[1].units.map(\.symbol).contains("cup"), "No unlabelled cup")
         XCTAssertTrue(none.groups[2].units.map(\.symbol).contains("clove"))
-        XCTAssertFalse(none.groups.flatMap(\.units).contains { $0.symbol == "oz" }, "Picker is metric-first")
 
         XCTAssertNil(MeasurementDisplay.pickerOptions(current: "g").retainedSourceUnit)
-        XCTAssertEqual(MeasurementDisplay.pickerOptions(current: "oz").retainedSourceUnit, "oz")
+        XCTAssertNil(MeasurementDisplay.pickerOptions(current: "oz").retainedSourceUnit)
         XCTAssertEqual(MeasurementDisplay.pickerOptions(current: "grams").retainedSourceUnit, "grams",
                        "Aliases aren't silently rewritten to a symbol")
         XCTAssertEqual(MeasurementDisplay.pickerOptions(current: "cup").retainedSourceUnit, "cup")

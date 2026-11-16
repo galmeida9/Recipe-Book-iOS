@@ -14,6 +14,7 @@ struct RecipeDetailView: View {
     @State private var showingShopping = false
     @State private var confirmDelete = false
     @State private var runner = ActionRunner()
+    @AppStorage(UnitSystem.storageKey) private var unitSystem: UnitSystem = .automatic
 
     struct Loaded {
         var recipe: RecipeDetail
@@ -190,16 +191,17 @@ struct RecipeDetailView: View {
                 Text("No steps yet.").foregroundStyle(.secondary)
             }
             ForEach(Array(recipe.steps.enumerated()), id: \.element.id) { index, step in
+                let shown = MeasurementDisplay.stepText(step.text, system: unitSystem)
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
                     Text("\(index + 1)")
                         .font(.system(.headline, design: .serif))
                         .foregroundStyle(RecipeBookTheme.accent)
                         .frame(minWidth: 24, alignment: .trailing)
-                    Text(step.text)
+                    Text(shown)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Step \(index + 1). \(step.text)")
+                .accessibilityLabel("Step \(index + 1). \(shown)")
             }
         }
     }

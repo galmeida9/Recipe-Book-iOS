@@ -16,6 +16,7 @@ struct LibraryView: View {
     @State private var showingCreate = false
     @State private var pendingSignIn = false
     @State private var jobs: [ImportJob] = []
+    @State private var isLoading = false
 
     var body: some View {
         NavigationStack {
@@ -48,23 +49,30 @@ struct LibraryView: View {
                         }
                         .padding()
                     }
-                    .refreshable { await load() }
+                    .refreshable { async let statuses: Void = loadJobs(); await load(); await statuses }
                 }
             }
             // Inside the stack so it re-runs when returning from a book (seen drafts, new jobs).
             .task(id: reload) {
+                isLoading = true
                 await load()
-                // Keep book badges current while something is importing; stops when this disappears.
+                isLoading = false
+            }
+            // Import status runs beside the books load, never in front of it. A just-queued import
+            // restarts only this; polling continues while something is importing and stops when
+            // the library disappears.
+            .task(id: [reload, importsChanged]) {
+                await loadJobs()
                 while !Task.isCancelled, accessMode == .account, jobs.contains(where: { $0.status.isInFlight }) {
                     try? await Task.sleep(for: .seconds(5))
                     guard !Task.isCancelled else { return }
                     await loadJobs()
                 }
             }
-            .onChange(of: importsChanged) { reload += 1 }
             .onChange(of: scenePhase) { _, phase in
-                // Imports finish while the app is closed; refresh badges when it comes back.
-                if phase == .active { reload += 1 }
+                // Imports finish while the app is closed; refresh badges when it comes back, but
+                // never cancel a load that is still in flight.
+                if phase == .active && !isLoading { reload += 1 }
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Library")
@@ -118,7 +126,6 @@ struct LibraryView: View {
             // A failed refresh keeps the books already on screen.
             if state.value == nil { state = .failed(error.localizedDescription) }
         } catch {}
-        await loadJobs()
     }
 
     private func loadJobs() async {
@@ -321,6 +328,7 @@ struct BookView: View {
     @State private var showingAddChoice = false
     @State private var showingImport = false
     @State private var imports: [ImportJob] = []
+    @State private var isLoading = false
     @State private var openingImport: ImportJob?
     @State private var importPendingDiscard: ImportJob?
     @State private var showingLeave = false
@@ -340,8 +348,14 @@ struct BookView: View {
         }
         .navigationTitle(state.value?.summary.name ?? summary.name)
         .task(id: reload) {
+            isLoading = true
             await load()
-            // Pending import cards update while the server works; stops when the book closes.
+            isLoading = false
+        }
+        // Pending import cards load beside the book, never in front of it, and update while the
+        // server works; polling stops when the book closes.
+        .task(id: reload) {
+            await loadImports()
             while !Task.isCancelled, imports.contains(where: { $0.status.isInFlight }) {
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled else { return }
@@ -349,7 +363,7 @@ struct BookView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { reload += 1 }
+            if phase == .active && !isLoading { reload += 1 }
         }
         .errorAlert($runner.errorMessage)
     }
@@ -468,7 +482,7 @@ struct BookView: View {
             }
         }
         .searchable(text: $search, prompt: "Search recipes")
-        .refreshable { await load() }
+        .refreshable { async let cards: Void = loadImports(); await load(); await cards }
         .adaptiveToolbar(
             primary: [ToolbarAction("Add Recipe", systemImage: "plus") { showingAddChoice = true }],
             secondary: bookMenuActions(book, permissions: permissions)
@@ -580,7 +594,6 @@ struct BookView: View {
                 runner.errorMessage = error.localizedDescription
             }
         } catch {}
-        await loadImports()
         // New drafts are acknowledged when their review is first opened (`markImportSeen` in the
         // review flow), then move into Recipes as "Needs Review" until saved or discarded.
     }

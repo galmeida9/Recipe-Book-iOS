@@ -480,17 +480,25 @@ public struct BookImportSections: Equatable, Sendable {
     }
 }
 
-/// Opening a ready draft. A new draft is acknowledged first and only then loaded, so the review
-/// and its save use the job as it is after the seen acknowledgement (no stale-version conflict).
-/// An acknowledgement failure doesn't block the review; the draft just stays "new".
+/// Opening a ready draft. A new draft's seen acknowledgement runs alongside loading the review,
+/// never in front of it, so a slow or failed acknowledgement can't hold the review up. Seen
+/// doesn't change the job's version, so saving the review never conflicts with it. If the
+/// acknowledgement fails the draft simply stays "new" and is acknowledged on the next open.
 /// Reopening an already-seen draft (e.g. after cancelling a review) only loads it.
 public enum ImportReviewOpening {
+    /// Starts the acknowledgement for a new ready draft; `nil` when there is nothing to acknowledge.
+    @discardableResult
+    public static func acknowledge(_ job: ImportJob,
+                                   markSeen: @escaping @Sendable (ImportJobID) async throws -> Void) -> Task<Void, Never>? {
+        guard job.status == .reviewRequired && job.isUnseen else { return nil }
+        let id = job.id
+        return Task { try? await markSeen(id) }
+    }
+
     public static func load(_ job: ImportJob,
-                            markSeen: (ImportJobID) async throws -> Void,
+                            markSeen: @escaping @Sendable (ImportJobID) async throws -> Void,
                             review: (ImportJobID) async throws -> RecipeDraft) async throws -> RecipeDraft {
-        if job.status == .reviewRequired && job.isUnseen {
-            try? await markSeen(job.id)
-        }
+        acknowledge(job, markSeen: markSeen)
         return try await review(job.id)
     }
 }

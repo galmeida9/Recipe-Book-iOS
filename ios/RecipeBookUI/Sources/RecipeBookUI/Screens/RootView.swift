@@ -40,7 +40,8 @@ public struct RecipeBookRootView: View {
             do {
                 session = .loaded(try await service.loadSession())
             } catch let error where !error.isCancellation {
-                session = .failed(error.localizedDescription)
+                // Never replace a signed-in app with an error screen.
+                if session.value == nil { session = .failed(error.localizedDescription) }
             } catch {}
         }
     }
