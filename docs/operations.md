@@ -459,8 +459,13 @@ validator rejected an explicit localized unit and blocked the entire review,
 while the Library's legacy unbound-import cards displayed operator test data
 with relative wall-clock time. Global import cards/timers are now removed.
 Book acknowledgements upsert immediately; visible per-book polling preserves
-cached content and cancels on navigation. App API requests have 20/30-second
-request/resource bounds, and shared Keychain
+cached content and cancels on navigation. Main-app API requests now use the
+earlier working shared transport with a 60-second inactivity ceiling; that is
+not the expected normal response time. The separate extension retains its short
+provided session bounds. Request cancellation is ignored by the UI only when
+its owning task is actually cancelled; an unsolicited transport cancellation
+under a live screen becomes an explicit error instead of leaving `.loading`.
+Shared Keychain
 coordination uses a nonblocking OS file lock rather than a potentially
 MainActor-blocking file-coordination wait.
 
