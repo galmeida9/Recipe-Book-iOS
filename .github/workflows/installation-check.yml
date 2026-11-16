@@ -77,8 +77,8 @@ jobs:
           # Requested metadata only. SideStore still supplies the actual team/profiles.
           codesign --force --sign - --entitlements RecipeBookShare-requested.plist "$APP/PlugIns/RecipeBookShare.appex"
           codesign --force --sign - --entitlements RecipeBook-requested.plist "$APP"
-          codesign --display --entitlements - "$APP" > app-entitlements.plist
-          codesign --display --entitlements - "$APP/PlugIns/RecipeBookShare.appex" > share-entitlements.plist
+          codesign --display --entitlements :- "$APP" > app-entitlements.plist
+          codesign --display --entitlements :- "$APP/PlugIns/RecipeBookShare.appex" > share-entitlements.plist
           python3 <<'PY'
           import plistlib, pathlib
           for name in ("app-entitlements.plist", "share-entitlements.plist"):
