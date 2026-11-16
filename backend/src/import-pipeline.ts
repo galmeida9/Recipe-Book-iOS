@@ -8,12 +8,13 @@ import { extractionInput, extractionJSONSchema, extractionRules, validateExtract
 export const pipelineSchema = z.object({
   stage: z.enum(["metadata", "audio", "model"]),
   evidence: evidenceSchema.nullable(),
+  thumbnailURL: z.string().max(8192).nullable().default(null),
   configuration: z.string().regex(/^[a-f0-9]{64}$/),
   runs: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)).max(3)
 }).strict();
 export type Pipeline = z.infer<typeof pipelineSchema>;
 const configuration = () => createHash("sha256").update(JSON.stringify(approvedPipeline())).digest("hex");
-export const initialPipeline = (): Pipeline => ({ stage: "metadata", evidence: null, runs: [], configuration: configuration() });
+export const initialPipeline = (): Pipeline => ({ stage: "metadata", evidence: null, thumbnailURL: null, runs: [], configuration: configuration() });
 const stageActors = {
   metadata: "apify~instagram-reel-scraper",
   audio: "apple_yang~instagram-transcripts-scraper",
@@ -88,12 +89,13 @@ export class ImportPipelineProvider extends ApifyProvider {
         502, "provider_source", "Instagram metadata did not match the requested public video.");
       const metadata = z.object({
         caption: z.string().max(40_000).nullable().optional(),
+        displayUrl: z.string().max(8192).optional(),
         latestComments: z.array(z.object({ text: z.string().max(10_000) })).max(100).optional()
       }).parse(item);
       const evidence = evidenceSchema.parse({
         caption: metadata.caption ?? null, transcript: null, comments: (metadata.latestComments ?? []).slice(0, 20).map(comment => comment.text)
       });
-      return { next: { ...pipeline, stage: "audio", evidence }, evidence, review: null };
+      return { next: { ...pipeline, stage: "audio", evidence, thumbnailURL: metadata.displayUrl ?? null }, evidence, review: null };
     }
     invariant(pipeline.evidence, 502, "evidence_missing", "The prior stage's evidence is missing.");
     if (pipeline.stage === "audio") {
@@ -117,7 +119,8 @@ export class ImportPipelineProvider extends ApifyProvider {
     const input = extractionInput(sourceURL, pipeline.evidence);
     invariant(typeof item["response"] === "string", 502, "provider_model", "The model did not return a JSON response.");
     const review = validateExtraction(JSON.parse(item["response"]), sourceURL, input.evidence);
-    return { next: null, evidence: { ...pipeline.evidence, warnings: review.warnings }, review };
+    return { next: null, evidence: { ...pipeline.evidence, warnings: review.warnings,
+      sources: input.evidence, extraction: review.extraction }, review };
   }
 }
 function samePost(actual: string, expected: string): boolean {

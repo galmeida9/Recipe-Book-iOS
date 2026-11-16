@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { GeneratedSection } from "./planner-service.js";
+import type { ExtractedRecipe, ExtractionSource } from "./recipe-extraction.js";
 
 export const idSchema = z.string().uuid().transform(value => value.toLowerCase());
 export const ingredientSchema = z.object({
@@ -32,7 +33,10 @@ export type BookKind = "personal" | "shared";
 export interface Book { id: string; name: string; kind: BookKind; role: Role; version: number }
 export interface Recipe { id: string; bookId: string; authorId: string; draft: RecipeDraft; version: number }
 export interface ShoppingList { id: string; name: string; items: ShoppingItem[]; generated: GeneratedSection[]; version: number }
-export interface Evidence { caption: string | null; comments: string[]; transcript: string | null; warnings?: string[] | undefined }
+export interface Evidence {
+  caption: string | null; comments: string[]; transcript: string | null;
+  warnings?: string[] | undefined; extraction?: ExtractedRecipe | undefined; sources?: ExtractionSource[] | undefined;
+}
 export type ImportState = "queued" | "running" | "review" | "failed" | "completed" | "discarded";
 export interface ImportJob {
   id: string;

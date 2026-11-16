@@ -344,15 +344,38 @@ to the caller. Deleted accounts keep an inactive identity tombstone for shared
 authorship; a broader privacy/retention policy is required before public operation.
 Recipe image bytes are proxied only after current membership authorization;
 no persistent public URLs/SAS tokens can survive revocation. Blob metadata must
-match bounded content size/type. Image ingestion is not yet a product API.
+match bounded content size/type. `POST /recipe-images` accepts bounded JPEG
+base64 with an idempotency key and optional expected-account header. Actual
+decoding/re-encoding strips EXIF/location data, rejects oversized/invalid pixels,
+and stores only private bytes. The current bounded trial allows 500 upload
+reservations per account, including failed/unknown uploads; deletion does not
+silently reset this storage-spending safeguard. A private orphan-blob retention
+and disposal policy remains required before public operation.
+
+Guest books, recipes, JPEGs and `StoredPlanResult` snapshots live in one atomic
+on-device envelope. Guest mode never silently substitutes for a failed cloud
+request. Account copying requires explicit consent, retains the local original,
+and persists the immutable payload plus indexed JPEG bytes before transport.
+Per-photo keys derive from the copy journal key and recipe index. The server
+binds uploads and final copy to the expected account, rejects changed pixels or
+snapshot hashes, and retries the same copy without duplicate books/recipes.
+Migrations `003` through `007` are additive; never rerun the initial schema.
+
+The expanded ordinary SQL suite and separate planner SQL suite were run
+successfully against the owned free-limit database after these migrations.
+They include concurrent copy/idempotency/account binding, photo-attachment
+ownership, planner reconciliation/version races/manual isolation and revoked
+membership. Temporary single-IP SQL and SCM operator rules were removed.
 
 ## Import provider approval and cost safety
 
-Imports are **disabled by default**. No actor has been selected, output-guaranteed
-or exercised against a real account. Apify MCP is not a runtime dependency.
-Before enabling, verify the actor's license, public-Reel access, pinned build,
-input shape, caption/comments/transcript fields, response sizes and actual prices.
-Captions/transcripts are not assumed available; missing evidence fails visibly.
+Imports are **disabled by default**. The implemented candidate is staged
+metadata, actual audio transcription, then Gemini 2.5 Flash Lite extraction via
+reviewed Apify actors. The coordinator's small authorized live benchmark is not
+production-app proof. Runtime secret, current account hard stops, pinned builds,
+pricing compatibility and data terms remain activation gates.
+Apify MCP is not a runtime dependency. See [the extraction contract and
+activation checklist](recipe-extraction.md). Missing audio fails visibly.
 
 Server-only settings:
 
@@ -363,18 +386,16 @@ Server-only settings:
 | `APIFY_NO_OVERAGES_VERIFIED` | Free-plan spending/overage limit remains enabled |
 | `APIFY_ACCOUNT_EXCLUSIVE` | No independent charged jobs outside this backend budget |
 | `APIFY_TOKEN` | Key Vault reference, never app/repo/chat |
-| `APIFY_ACTOR_ID`, `APIFY_ACTOR_BUILD` | Reviewed actor and pinned numeric build |
-| `APIFY_RUN_CAP_MICROS` | Approved hard run cap, at most USD 1 |
-| `APIFY_INPUT_URL_FIELD` | Reviewed top-level field accepting a URL array |
-| `APIFY_OUTPUT_CAPTION_FIELD` | Optional reviewed top-level string field |
-| `APIFY_OUTPUT_COMMENTS_FIELD` | Optional reviewed top-level array of strings |
-| `APIFY_OUTPUT_TRANSCRIPT_FIELD` | Optional reviewed top-level string field |
+| `APIFY_PIPELINE_TERMS_VERIFIED` | Reviewed data-processing/public-source terms |
+| `APIFY_PIPELINE_PRICING_VERIFIED` | Actual charging-model/hard-cap compatibility for all three actors |
+| `APIFY_METADATA_BUILD`, `APIFY_AUDIO_BUILD`, `APIFY_MODEL_BUILD` | Reviewed pinned numeric builds |
+| `APIFY_METADATA_CAP_MICROS`, `APIFY_AUDIO_CAP_MICROS`, `APIFY_MODEL_CAP_MICROS` | Per-stage hard caps; total at most USD 1 |
 
-The provider adapter sends `maxTotalChargeUsd`, `maxItems=1`, timeout 300 seconds,
-no restarts and limited permissions. The current
-[Apify API documentation](https://docs.apify.com/api/v2/actors-runs-post)
-states that maxTotalChargeUsd caps all pricing models; verify the actual selected
-actor confirms this cap. The adapter refuses an unconfirmed cap.
+Each stage sends `maxTotalChargeUsd`, `maxItems=1`, timeout 180 seconds, no
+restarts and limited permissions. Billing options are not universal work limits:
+verify each actor's actual charging model supports its requested cap. The
+adapter aborts a known run with an unconfirmed cap. Model tool use, fallbacks,
+comparison models and automatic retries are disabled.
 
 The backend checks account monthly-cycle usage, reserves all in-flight spending
 transactionally across app accounts and uses a conservative USD 4.75 ceiling,
@@ -401,8 +422,10 @@ This occurs only during actual requests, never through an idle database timer;
 dispatched runs retain their hard provider timeout/cap and are never restarted.
 Unsafe failed jobs cannot be retried. A pre-dispatch failure can retry only with
 a new reservation and approved configuration. Evidence is preserved for manual
-review; only explicitly labelled sections are parsed. Unknown amounts/servings
-remain null, not guessed. Approval saves to an explicitly chosen accessible book.
+review. Model output must pass the dynamic schema and local source-fact checks;
+unresolved conflicting amounts become unknown or cause rejection. Unknown
+amounts/servings remain null, not guessed. Approval saves to an explicitly chosen
+accessible book and retains the canonical original Instagram link.
 
 ## Required device gate
 

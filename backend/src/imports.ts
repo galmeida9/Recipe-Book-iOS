@@ -8,6 +8,8 @@ import { type ProviderBudget } from "./apify.js";
 import { evidenceSchema } from "./import-evidence.js";
 import { ImportPipelineProvider, approvedPipeline, initialPipeline, pipelineSchema } from "./import-pipeline.js";
 import type { ImportDelivery } from "./queue.js";
+import { downloadInstagramCover } from "./import-cover.js";
+import { uploadRecipeImage } from "./images.js";
 
 export function reserveBudget(spent: number, reserved: number, cap: number, amount: number): number {
   invariant([spent, reserved, cap, amount].every(Number.isSafeInteger) && spent >= 0 && reserved >= 0 && amount > 0,
@@ -218,7 +220,7 @@ export async function processImport(id: string, provider = new ImportPipelinePro
       allowed = invitations[0]!.count > 0;
     }
     if (!allowed || row.deadline.getTime() <= Date.now()) return { kind: "expired" as const, row };
-    if (row.providerRunId) return { kind: "poll" as const, row };
+    if (row.providerRunId) return { kind: "poll" as const, row, principal: identities[0]! };
     if (row.dispatchStarted) {
       if ((row.dispatchStartedAt?.getTime() ?? 0) < Date.now() - 60_000) return { kind: "ambiguous" as const, row };
       return null;
@@ -287,6 +289,17 @@ export async function processImport(id: string, provider = new ImportPipelinePro
       });
     } else {
       invariant(completed.review, 502, "extraction_missing", "The model did not return a validated editable draft.");
+      if (pipeline.thumbnailURL) {
+        try {
+          const bytes = await downloadInstagramCover(pipeline.thumbnailURL);
+          const cover = await uploadRecipeImage(new RecipeBookService(action.principal),
+            { jpegBase64: bytes.toString("base64") }, action.row.id.toLowerCase(), action.row.userId.toLowerCase());
+          completed.review.draft.coverImageID = cover.id;
+        } catch (error) {
+          if (!(error instanceof AppError) || !["thumbnail_unavailable", "invalid_cover", "image_limit"].includes(error.code)) throw error;
+          completed.evidence.warnings = ["Cover photo unavailable: " + error.message, ...(completed.evidence.warnings ?? [])].slice(0, 100);
+        }
+      }
       await finishImport(action.row, JSON.stringify(completed.review.draft), JSON.stringify(completed.evidence), null);
     }
   } catch (error) {

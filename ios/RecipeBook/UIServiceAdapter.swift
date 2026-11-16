@@ -224,16 +224,25 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
                     evidence.caption.map { "Caption:\n\($0)" },
                     evidence.comments.isEmpty ? nil : "Comments:\n" + evidence.comments.joined(separator: "\n\n"),
                     evidence.transcript.map { "Transcript:\n\($0)" },
-                    evidence.warnings.map { "Review warnings:\n" + $0.joined(separator: "\n") }
+                    evidence.warnings.map { "Review warnings:\n" + $0.joined(separator: "\n") },
+                    evidence.sources.map { sources in sources.map { "\($0.id) (\($0.kind)): \($0.text)" }.joined(separator: "\n\n") }
                 ].compactMap { $0 }.joined(separator: "\n\n")
-            }
+            },
+            mealStyle: draft.mealStyle.flatMap { RecipeBookPresentation.MealStyle(rawValue: $0.rawValue) },
+            coverImage: draft.coverImageID.map { ImageRef(id: string($0)) }
         )
     }
     func approveImport(id: ImportJobID, draft: RecipeBookPresentation.RecipeDraft) async throws -> RecipeDetail {
         guard let destination = draft.bookID else { throw failure("Choose a destination book before saving.") }
         let uuid = try identifier(id)
         guard let value = jobCache[uuid] else { throw failure("Reload the import review before saving.") }
-        let saved = try await api.approveImport(value, bookId: identifier(destination), draft: coreDraft(draft))
+        var payload = coreDraft(draft)
+        switch draft.coverImageEdit {
+        case .unchanged: payload.coverImageID = value.draft?.coverImageID
+        case .remove: payload.coverImageID = nil
+        case .replace(let jpegData): payload.coverImageID = try await api.uploadCover(jpegData)
+        }
+        let saved = try await api.approveImport(value, bookId: identifier(destination), draft: payload)
         recipeCache[saved.id] = saved
         jobCache[uuid] = nil
         return recipeDetail(saved, authorName: currentAccount?.displayName ?? string(saved.authorId))
