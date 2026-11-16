@@ -105,6 +105,7 @@ struct ShoppingListView: View {
     @State private var reload = 0
     /// Items with a request in flight; prevents double toggles on the same row.
     @State private var pending: Set<ShoppingItemID> = []
+    @AppStorage(UnitSystem.storageKey) private var unitSystem: UnitSystem = .automatic
     @State private var errorMessage: String?
     @State private var newItem = ""
     @State private var newAmount = ""
@@ -199,7 +200,7 @@ struct ShoppingListView: View {
                         .strikethrough(item.isBought)
                         .foregroundStyle(item.isBought ? Color.secondary : Color.primary)
                     HStack(spacing: 6) {
-                        if let amount = QuantityText.display(quantity: item.quantity, unit: item.unit) {
+                        if let amount = MeasurementDisplay.display(quantity: item.quantity, unit: item.unit, system: unitSystem) {
                             Text(amount).monospacedDigit()
                         }
                         if let source = sourceText(item) {
@@ -325,6 +326,7 @@ struct AccountView: View {
     @Environment(\.recipeBookService) private var service
     @State private var showingDelete = false
     @State private var runner = ActionRunner()
+    @AppStorage(UnitSystem.storageKey) private var unitSystem: UnitSystem = .automatic
 
     var body: some View {
         NavigationStack {
@@ -340,6 +342,19 @@ struct AccountView: View {
                     Text("Account ID")
                 } footer: {
                     Text("Book owners use this to add you to a shared book.")
+                }
+                Section {
+                    Picker("Units", selection: $unitSystem) {
+                        ForEach(UnitSystem.allCases) { system in
+                            Text(system.title).tag(system)
+                        }
+                    }
+                } header: {
+                    Text("Measurements")
+                } footer: {
+                    Text(unitSystem == .automatic
+                         ? "Follows your region (now \(UnitSystem.automatic.resolved(for: .current).title.lowercased())). Weights in the other system are shown converted and marked ≈. Recipes keep their original amounts."
+                         : "Weights in the other system are shown converted and marked ≈. Recipes keep their original amounts.")
                 }
                 Section("About") {
                     Label("Suggestions use only recipes saved in your books.", systemImage: "lock.shield")

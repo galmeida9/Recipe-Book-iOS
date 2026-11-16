@@ -73,7 +73,7 @@ public enum QuantityText {
         return .success(format(value))
     }
 
-    private static func parse(_ text: String) -> Decimal? {
+    static func parse(_ text: String) -> Decimal? {
         let parts = text.split(separator: " ").map(String.init)
         if parts.count == 2, let whole = plainDecimal(parts[0]), let fraction = fraction(parts[1]) {
             return whole + fraction

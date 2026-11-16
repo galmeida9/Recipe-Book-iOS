@@ -695,12 +695,15 @@ struct IngredientEditorRow: View {
                 })
     }
 
-    private var unit: Binding<String> {
-        Binding(get: { line.unit ?? "" }, set: { line.unit = $0.isEmpty ? nil : $0 })
+    private var unitOptions: MeasurementDisplay.PickerOptions {
+        MeasurementDisplay.pickerOptions(current: line.unit)
     }
 
-    private var preparation: Binding<String> {
-        Binding(get: { line.preparation ?? "" }, set: { line.preparation = $0.isEmpty ? nil : $0 })
+    /// Picking writes the exact symbol; "No unit" clears it. A source unit outside the list stays
+    /// selected until the user picks something else.
+    private var unit: Binding<String> {
+        Binding(get: { line.unit?.trimmingCharacters(in: .whitespaces) ?? "" },
+                set: { line.unit = $0.isEmpty ? nil : $0 })
     }
 
     private var quantityIsInvalid: Bool {
@@ -719,23 +722,28 @@ struct IngredientEditorRow: View {
                     .foregroundStyle(quantityIsInvalid ? Color.red : Color.primary)
                     .accessibilityLabel("Amount for \(line.name.isEmpty ? "ingredient" : line.name)")
                 Divider()
-                TextField("Unit", text: unit)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Menu {
-                    ForEach(MetricUnits.common, id: \.self) { u in
-                        Button(u) { line.unit = u }
+                Picker("Unit", selection: unit) {
+                    Text("No unit").tag("")
+                    if let retained = unitOptions.retainedSourceUnit {
+                        Section("From source") {
+                            Text(retained).tag(retained)
+                        }
                     }
-                    Button("No unit") { line.unit = nil }
-                } label: {
-                    Image(systemName: "chevron.up.chevron.down")
-                        .accessibilityLabel("Choose unit")
+                    ForEach(unitOptions.groups) { group in
+                        Section(group.kind.title) {
+                            ForEach(group.units) { u in
+                                Text(u.symbol).tag(u.symbol)
+                            }
+                        }
+                    }
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .accessibilityLabel("Unit for \(line.name.isEmpty ? "ingredient" : line.name)")
+                Spacer(minLength: 0)
             }
             .font(.subheadline)
-            TextField("Preparation (optional)", text: preparation)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            // Preparation notes are no longer edited here; any stored value is kept on save.
             if let original = line.originalText, !original.isEmpty {
                 Text("Source: “\(original)”")
                     .font(.caption)

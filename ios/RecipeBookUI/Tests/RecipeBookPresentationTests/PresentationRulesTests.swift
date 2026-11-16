@@ -373,4 +373,118 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertEqual(updated.count, 1, "Same job id replaces, never duplicates")
         XCTAssertEqual(updated.first?.stageDetail, "Transcribing audio")
     }
+
+    // MARK: Book import sections
+
+    func testSeenUnsavedDraftsMoveFromImportingToRecipesAsNeedsReview() {
+        let url = URL(string: "https://www.instagram.com/reel/A/")!
+        func job(_ id: String, _ status: ImportStatus, unseen: Bool = false) -> ImportJob {
+            ImportJob(id: id, sourceURL: url, status: status, createdAt: Date(), bookID: "a", isUnseen: unseen)
+        }
+        let sections = BookImportSections(cards: [
+            job("queued", .queued),
+            job("failed", .failed(reason: "Reel removed", canRetry: false)),
+            job("new", .reviewRequired, unseen: true),
+            job("opened", .reviewRequired, unseen: false),
+        ])
+        XCTAssertEqual(sections.importing.map(\.id), ["queued", "failed", "new"])
+        XCTAssertEqual(sections.needsReview.map(\.id), ["opened"], "Opened but unsaved drafts stay in the book")
+        XCTAssertNil(job("x", .failed(reason: "r", canRetry: false)).retryReason)
+    }
+
+    func testFirstOpenAcknowledgesBeforeLoadingAndReopenOnlyLoads() async throws {
+        actor Calls { var log: [String] = []; func add(_ s: String) { log.append(s) } }
+        let url = URL(string: "https://www.instagram.com/reel/A/")!
+        var job = ImportJob(id: "j", sourceURL: url, status: .reviewRequired, createdAt: Date(), bookID: "a", isUnseen: true)
+        let calls = Calls()
+        let draft = RecipeDraft(bookID: "a", title: "Soup")
+
+        let first = try await ImportReviewOpening.load(job, markSeen: { await calls.add("seen \($0)") },
+                                                       review: { await calls.add("review \($0)"); return draft })
+        XCTAssertEqual(first, draft)
+        let firstLog = await calls.log
+        XCTAssertEqual(firstLog, ["seen j", "review j"], "Save must use the job after the seen acknowledgement")
+
+        // Cancelled review: the draft is now seen, sits in Recipes as Needs Review, and reopens.
+        job.isUnseen = false
+        XCTAssertEqual(BookImportSections(cards: [job]).needsReview.map(\.id), ["j"])
+        _ = try await ImportReviewOpening.load(job, markSeen: { await calls.add("seen \($0)") },
+                                               review: { await calls.add("review \($0)"); return draft })
+        let reopenLog = await calls.log
+        XCTAssertEqual(reopenLog, ["seen j", "review j", "review j"])
+
+        // A failed acknowledgement doesn't block reviewing.
+        job.isUnseen = true
+        let loaded = try await ImportReviewOpening.load(job, markSeen: { _ in throw RecipeBookUIError.serviceNotConfigured },
+                                                        review: { _ in draft })
+        XCTAssertEqual(loaded, draft)
+    }
+
+    // MARK: Measurements
+
+    func testAutomaticUnitsFollowRegionAndNorwayIsMetric() {
+        XCTAssertEqual(UnitSystem.automatic.resolved(for: Locale(identifier: "nb_NO")), .metric)
+        XCTAssertEqual(UnitSystem.automatic.resolved(for: Locale(identifier: "en_GB")), .metric)
+        XCTAssertEqual(UnitSystem.automatic.resolved(for: Locale(identifier: "en_US")), .imperial)
+        XCTAssertEqual(UnitSystem.imperial.resolved(for: Locale(identifier: "nb_NO")), .imperial)
+        XCTAssertEqual(UnitSystem.metric.resolved(for: Locale(identifier: "en_US")), .metric)
+    }
+
+    func testWeightsConvertOnlyAcrossSystemsAndAreMarked() {
+        func show(_ q: String?, _ u: String?, _ s: UnitSystem) -> String? {
+            MeasurementDisplay.display(quantity: q, unit: u, system: s, locale: Locale(identifier: "nb_NO"))
+        }
+        XCTAssertEqual(show("8", "oz", .metric), "≈ 227 g")
+        XCTAssertEqual(show("3", "lb", .metric), "≈ 1.36 kg")
+        XCTAssertEqual(show("2", "pounds", .automatic), "≈ 907 g")
+        XCTAssertEqual(show("250", "g", .imperial), "≈ 8.8 oz")
+        XCTAssertEqual(show("1", "kg", .imperial), "≈ 2.2 lb")
+        // Same system: shown exactly as written, never rescaled.
+        XCTAssertEqual(show("1500", "g", .metric), "1500 g")
+        XCTAssertEqual(show("1 1/2", "lb", .imperial), "1 1/2 lb")
+    }
+
+    func testAmbiguousCountAndUnknownUnitsAreNeverConverted() {
+        func show(_ q: String?, _ u: String?, _ s: UnitSystem) -> String? {
+            MeasurementDisplay.display(quantity: q, unit: u, system: s, locale: Locale(identifier: "en_US"))
+        }
+        XCTAssertEqual(show("1", "cup", .metric), "1 cup", "No US/UK cup assumption and no density guess")
+        XCTAssertEqual(show("4", "fl oz", .metric), "4 fl oz")
+        XCTAssertEqual(show("200", "ml", .imperial), "200 ml", "Imperial volumes differ between US and UK")
+        XCTAssertEqual(show("2", "tbsp", .metric), "2 tbsp")
+        XCTAssertEqual(show("3", "cloves", .metric), "3 cloves")
+        XCTAssertEqual(show("1", "knob", .metric), "1 knob")
+        XCTAssertEqual(show("a few", "oz", .metric), "a few oz", "Unparseable amounts are shown as written")
+        XCTAssertNil(show(nil, "g", .metric), "Unknown amounts are never invented")
+    }
+
+    func testUnitPickerOffersKnownUnitsAndKeepsAnyOtherSourceUnit() {
+        let none = MeasurementDisplay.pickerOptions(current: nil)
+        XCTAssertNil(none.retainedSourceUnit)
+        XCTAssertEqual(none.groups.map(\.kind), [.weight, .volume, .count])
+        XCTAssertEqual(none.groups[0].units.map(\.symbol), ["g", "kg"])
+        XCTAssertTrue(none.groups[1].units.map(\.symbol).contains("tbsp"))
+        XCTAssertTrue(none.groups[2].units.map(\.symbol).contains("clove"))
+        XCTAssertFalse(none.groups.flatMap(\.units).contains { $0.symbol == "oz" }, "Picker is metric-first")
+
+        XCTAssertNil(MeasurementDisplay.pickerOptions(current: "g").retainedSourceUnit)
+        XCTAssertEqual(MeasurementDisplay.pickerOptions(current: "oz").retainedSourceUnit, "oz")
+        XCTAssertEqual(MeasurementDisplay.pickerOptions(current: "grams").retainedSourceUnit, "grams",
+                       "Aliases aren't silently rewritten to a symbol")
+        XCTAssertEqual(MeasurementDisplay.pickerOptions(current: "cup").retainedSourceUnit, "cup")
+        XCTAssertNil(MeasurementDisplay.pickerOptions(current: "  ").retainedSourceUnit)
+    }
+
+    func testDraftNormalizationKeepsHiddenPreparationAndSourceUnits() {
+        var draft = RecipeDraft(bookID: "b")
+        draft.title = "Soup"
+        draft.ingredients = [
+            IngredientLine(id: "i", name: "Onion", quantity: "1", unit: "pc", preparation: "finely chopped"),
+            IngredientLine(id: "j", name: "Butter", quantity: "8", unit: "oz"),
+        ]
+        let saved = RecipeDraftRules.normalized(draft).ingredients
+        XCTAssertEqual(saved.first?.preparation, "finely chopped")
+        XCTAssertEqual(saved.last?.quantity, "8", "Viewer units never rewrite saved amounts")
+        XCTAssertEqual(saved.last?.unit, "oz")
+    }
 }

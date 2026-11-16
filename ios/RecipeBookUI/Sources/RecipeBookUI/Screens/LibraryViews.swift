@@ -378,6 +378,10 @@ struct BookView: View {
     private func content(_ book: BookDetail) -> some View {
         let permissions = BookPermissions(book: book)
         let recipes = book.recipes.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
+        let sections = BookImportSections(cards: imports.filter {
+            $0.status != .reviewRequired || $0.isUnseen || search.isEmpty
+                || ($0.titleHint ?? "").localizedCaseInsensitiveContains(search)
+        })
         List {
             Section {
                 HStack(spacing: 12) {
@@ -402,9 +406,9 @@ struct BookView: View {
                 }
             }
 
-            if !imports.isEmpty {
+            if !sections.importing.isEmpty {
                 Section {
-                    ForEach(imports) { job in
+                    ForEach(sections.importing) { job in
                         PendingImportCard(job: job, isRunning: runner.isRunning,
                                           onReview: { openingImport = job },
                                           onRetry: {
@@ -416,17 +420,24 @@ struct BookView: View {
                                           onDiscard: { importPendingDiscard = job })
                     }
                 } header: {
-                    Text("From Instagram")
+                    Text("Importing")
                 } footer: {
                     Text("Imports keep going with the app closed. Nothing is added to the book until you review and save it.")
                 }
             }
 
             Section("Recipes") {
+                ForEach(sections.needsReview) { job in
+                    NeedsReviewRow(job: job, isRunning: runner.isRunning,
+                                   onReview: { openingImport = job },
+                                   onDiscard: { importPendingDiscard = job })
+                }
                 if book.recipes.isEmpty && !imports.isEmpty {
-                    Text("Reviewed imports and recipes you write appear here.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    if sections.needsReview.isEmpty {
+                        Text("Reviewed imports and recipes you write appear here.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 } else if book.recipes.isEmpty {
                     ContentUnavailableView {
                         Label("No recipes yet", systemImage: "fork.knife")
@@ -570,11 +581,8 @@ struct BookView: View {
             }
         } catch {}
         await loadImports()
-        // Opening the book acknowledges its new drafts. Persisted by the service; the cards stay
-        // until each draft is saved or discarded, and the Library badge updates from the server.
-        for job in imports where job.status == .reviewRequired && job.isUnseen {
-            try? await service.markImportSeen(id: job.id)
-        }
+        // New drafts are acknowledged when their review is first opened (`markImportSeen` in the
+        // review flow), then move into Recipes as "Needs Review" until saved or discarded.
     }
 
     private func loadImports() async {
@@ -662,17 +670,20 @@ struct PendingImportCard: View {
             .buttonStyle(.borderedProminent)
             .disabled(isRunning)
         case .failed(_, let canRetry):
-            HStack(spacing: 10) {
-                if canRetry {
-                    Button(action: onRetry) {
-                        Label("Try Again", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 8) {
+                if !canRetry { RetryUnavailableText(job: job) }
+                HStack(spacing: 10) {
+                    if canRetry {
+                        Button(action: onRetry) {
+                            Label("Try Again", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button(role: .destructive, action: onDiscard) {
+                        Text("Discard").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
                 }
-                Button(role: .destructive, action: onDiscard) {
-                    Text("Discard").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
             }
             .disabled(isRunning)
         case .queued, .processing:
@@ -699,6 +710,60 @@ struct PendingImportCard: View {
         case .completed: return RecipeBookTheme.success
         case .queued, .processing: return .secondary
         }
+    }
+}
+
+/// An imported draft the user has opened but not saved. It sits with the book's recipes so it
+/// isn't lost; nothing is saved until the user reviews it.
+@MainActor
+struct NeedsReviewRow: View {
+    let job: ImportJob
+    let isRunning: Bool
+    let onReview: () -> Void
+    let onDiscard: () -> Void
+
+    var body: some View {
+        Button(action: onReview) {
+            HStack(spacing: 14) {
+                CoverImage(image: job.thumbnail, seed: job.id, symbol: "play.rectangle.fill")
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(job.titleHint ?? "Instagram Reel")
+                        .font(.system(.body, design: .serif).weight(.semibold))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(2)
+                    Label("Needs Review", systemImage: "exclamationmark.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(RecipeBookTheme.warning)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+        }
+        .disabled(isRunning)
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Imported draft, not saved yet. Opens the review.")
+        .swipeActions {
+            Button("Discard", systemImage: "trash", role: .destructive, action: onDiscard)
+        }
+    }
+}
+
+/// Why Try Again isn't offered, as reported by the backend.
+@MainActor
+struct RetryUnavailableText: View {
+    let job: ImportJob
+
+    var body: some View {
+        Label(job.retryReason ?? "Try Again isn’t available for this import.", systemImage: "info.circle")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

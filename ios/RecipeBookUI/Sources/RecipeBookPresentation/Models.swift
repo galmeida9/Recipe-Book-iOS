@@ -447,9 +447,13 @@ public struct ImportJob: Equatable, Sendable, Identifiable {
     /// Set by the backend when a draft becomes ready; cleared (persisted) by `markImportSeen`.
     /// Drives the book's "new" badge count.
     public var isUnseen: Bool
+    /// Backend explanation of why Try Again isn't offered for a failed import (e.g. the Reel was
+    /// removed, or this month's import allowance is used up). Display only.
+    public var retryReason: String?
 
     public init(id: ImportJobID, sourceURL: URL, status: ImportStatus, createdAt: Date, titleHint: String? = nil,
-                bookID: BookID? = nil, stageDetail: String? = nil, thumbnail: ImageRef? = nil, isUnseen: Bool = false) {
+                bookID: BookID? = nil, stageDetail: String? = nil, thumbnail: ImageRef? = nil, isUnseen: Bool = false,
+                retryReason: String? = nil) {
         self.id = id
         self.sourceURL = sourceURL
         self.status = status
@@ -459,6 +463,35 @@ public struct ImportJob: Equatable, Sendable, Identifiable {
         self.stageDetail = stageDetail
         self.thumbnail = thumbnail
         self.isUnseen = isUnseen
+        self.retryReason = retryReason
+    }
+}
+
+/// How one book shows its imports: still-importing, failed and new (unseen) drafts in an
+/// "Importing" section; drafts the user has already opened but not saved stay in Recipes,
+/// marked "Needs Review", until they are saved or discarded.
+public struct BookImportSections: Equatable, Sendable {
+    public var importing: [ImportJob]
+    public var needsReview: [ImportJob]
+
+    public init(cards: [ImportJob]) {
+        importing = cards.filter { !($0.status == .reviewRequired && !$0.isUnseen) }
+        needsReview = cards.filter { $0.status == .reviewRequired && !$0.isUnseen }
+    }
+}
+
+/// Opening a ready draft. A new draft is acknowledged first and only then loaded, so the review
+/// and its save use the job as it is after the seen acknowledgement (no stale-version conflict).
+/// An acknowledgement failure doesn't block the review; the draft just stays "new".
+/// Reopening an already-seen draft (e.g. after cancelling a review) only loads it.
+public enum ImportReviewOpening {
+    public static func load(_ job: ImportJob,
+                            markSeen: (ImportJobID) async throws -> Void,
+                            review: (ImportJobID) async throws -> RecipeDraft) async throws -> RecipeDraft {
+        if job.status == .reviewRequired && job.isUnseen {
+            try? await markSeen(job.id)
+        }
+        return try await review(job.id)
     }
 }
 

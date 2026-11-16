@@ -205,6 +205,8 @@ struct ReelImportFlowView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.large)
+                        } else {
+                            RetryUnavailableText(job: job)
                         }
                         Button("Discard Import", role: .destructive) { confirmDiscard = true }
                             .buttonStyle(.bordered)
@@ -245,14 +247,15 @@ struct ReelImportFlowView: View {
     private func advance(with job: ImportJob) async {
         guard job.status == .reviewRequired else { phase = .tracking(job); return }
         do {
-            async let draft = resolved.importReview(id: job.id)
-            async let books = resolved.books()
-            var reviewDraft = try await draft
+            let service = resolved
+            async let books = service.books()
+            var reviewDraft = try await ImportReviewOpening.load(
+                job, markSeen: { try await service.markImportSeen(id: $0) },
+                review: { try await service.importReview(id: $0) })
             // A job bound to a book at submit time keeps that destination. Older unbound jobs use the
             // book the user started from, or one chosen in review.
             reviewDraft.bookID = job.bookID ?? preselectedBookID
             phase = .review(job, reviewDraft, try await books)
-            if job.isUnseen { try? await resolved.markImportSeen(id: job.id) }
         } catch let error where !error.isCancellation {
             phase = .tracking(job)
             runner.errorMessage = error.localizedDescription

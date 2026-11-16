@@ -258,13 +258,15 @@ struct MetaLabel: View {
 }
 
 /// Amount text that never invents a value: unknown amounts read "Amount not specified".
+/// Converted amounts follow the viewer's units preference; stored values are unchanged.
 @MainActor
 struct AmountText: View {
     let quantity: String?
     let unit: String?
+    @AppStorage(UnitSystem.storageKey) private var unitSystem: UnitSystem = .automatic
 
     var body: some View {
-        if let text = QuantityText.display(quantity: quantity, unit: unit) {
+        if let text = MeasurementDisplay.display(quantity: quantity, unit: unit, system: unitSystem) {
             Text(text).monospacedDigit()
         } else {
             Text("—")
