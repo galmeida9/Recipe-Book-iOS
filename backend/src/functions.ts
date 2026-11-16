@@ -12,7 +12,6 @@ import { weekStartSchema } from "./planner.js";
 import { reviewedPipeline } from "./import-pipeline.js";
 import { verifiedFreeStopBudget } from "./apify.js";
 import "./bootstrap.js";
-import "./read-diagnostics.js";
 
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
 async function body(request: HttpRequest, maximum = 300_000): Promise<unknown> {

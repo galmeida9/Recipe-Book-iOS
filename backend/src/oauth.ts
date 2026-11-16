@@ -5,7 +5,6 @@ import type { HttpRequest, HttpResponseInit } from "@azure/functions";
 import { AppError, invariant, requiredSetting, type Principal } from "./contracts.js";
 import { googleAuthenticator } from "./auth.js";
 import { serializable, query } from "./database.js";
-import { beginOAuthTrace } from "./oauth-diagnostics.js";
 
 export const nativeOAuthCallback = "recipebook://oauth";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -64,7 +63,8 @@ export interface OAuthProvider {
   refresh(token: string): Promise<Credentials>;
 }
 export interface OAuthDiagnostic {
-  phase: "token_received" | "flow_claim_started" | "flow_claimed" | "google_exchange_started" | "google_exchange_completed" | "token_verified" | "token_failed";
+  phase: "http_received" | "body_read" | "body_timeout" | "body_cancel_failed" | "token_received" |
+    "flow_claim_started" | "flow_claimed" | "google_exchange_started" | "google_exchange_completed" | "token_verified" | "token_failed";
   elapsedMs: number;
   outcome?: string;
 }
@@ -185,7 +185,7 @@ function providerError(error: unknown, message: string) {
   return new AppError(503, "identity_unavailable", "Google sign-in is temporarily unavailable. Try again with a new sign-in request.");
 }
 export async function readOAuthForm(request: Pick<HttpRequest, "body">, timeoutMs = 15_000,
-  trace: ReturnType<typeof beginOAuthTrace> = () => {}): Promise<string> {
+  trace: (phase: OAuthDiagnostic["phase"]) => void = () => {}): Promise<string> {
   if (!request.body) return "";
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -216,7 +216,8 @@ export async function oauthRoute(request: HttpRequest, diagnose: (event: OAuthDi
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api\//, "/");
   if (!path.startsWith("/auth/google/")) return null;
-  const trace = beginOAuthTrace();
+  const started = Date.now();
+  const trace = (phase: OAuthDiagnostic["phase"]) => diagnose({ phase, elapsedMs: Date.now() - started });
   if (request.method === "POST" && path === "/auth/google/token") trace("http_received");
   const clientID = requiredSetting("GOOGLE_SERVER_CLIENT_ID");
   googleAuthenticator({ serverClientID: clientID });
@@ -227,7 +228,7 @@ export async function oauthRoute(request: HttpRequest, diagnose: (event: OAuthDi
   const provider = new GoogleOAuthProvider(clientID, secret, `https://${host}/api/auth/google/callback`);
   const broker = new OAuthBroker(clientID, new SQLFlowStore(), provider,
     (token, nonce) => googleAuthenticator({ serverClientID: clientID, ...(nonce === undefined ? {} : { nonce }) })("Bearer " + token),
-    event => { trace(event.phase); diagnose(event); });
+    diagnose);
   if (request.method === "GET" && path === "/auth/google/config") return { status: 200, jsonBody: broker.config(), headers };
   if (request.method === "GET" && path === "/auth/google/authorize") return { status: 302, headers: { ...headers, Location: await broker.authorize(unique(url.searchParams)) } };
   if (request.method === "GET" && path === "/auth/google/callback") return { status: 302, headers: { ...headers, Location: await broker.callback(unique(url.searchParams)) } };
