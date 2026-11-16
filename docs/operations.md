@@ -464,10 +464,13 @@ request/resource bounds, and shared Keychain
 coordination uses a nonblocking OS file lock rather than a potentially
 MainActor-blocking file-coordination wait.
 
-The initial 15/20-second global AppAuth clock caused a subsequent sign-in
-transport regression risk. Authentication is now separate from CRUD: retained
-main-app discovery/token sessions have asynchronous 90/120-second request/resource
-bounds, while share-extension token refresh stays at 20/25 seconds. Timeouts,
+The exact transport change from the earlier working login was introduced in
+`96cf56d`: shared-credential setup globally replaced AppAuth's default session
+with an ephemeral 15/20-second session. The main app now leaves AppAuth's proven
+SDK-default shared session unchanged; only the separate extension process sets
+a short 20/25-second refresh session. Discovery uses a retained bounded session.
+This restores the earlier transport behavior without restoring blocking file
+coordination or weakening Keychain authorization. Timeouts,
 cancellation, TLS errors and OAuth grant errors are distinguished without
 displaying request URLs, codes, PKCE values or tokens. Transport failure does
 not erase an existing stored account session. A successful private Google login

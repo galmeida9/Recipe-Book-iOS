@@ -491,7 +491,9 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         case .queued: status = .queued
         case .running: status = .processing
         case .review: status = .reviewRequired
-        case .failed: status = .failed(reason: value.error ?? "The import failed.", canRetry: false)
+        case .failed:
+            status = .failed(reason: [value.error ?? "The import failed.", value.retryReason].compactMap { $0 }.joined(separator: "\n"),
+                             canRetry: value.canRetry ?? false)
         case .completed:
             guard let recipeID = value.recipeId, let bookID = value.bookId else { throw failure("Completed import identifiers are missing.") }
             status = .completed(recipeID: string(recipeID), bookID: string(bookID))

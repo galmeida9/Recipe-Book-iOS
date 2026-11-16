@@ -24,6 +24,7 @@ public actor APIClient {
     private let baseURL: URL
     private let tokens: any AccessTokenProvider
     private let session: URLSession
+    private let requestTimeout: TimeInterval
 
     public init(baseURL: URL, tokens: any AccessTokenProvider, session: URLSession? = nil) throws {
         guard baseURL.scheme == "https", baseURL.host != nil, baseURL.query == nil, baseURL.fragment == nil else {
@@ -32,13 +33,8 @@ public actor APIClient {
         self.baseURL = baseURL
         self.tokens = tokens
         if let session { self.session = session }
-        else {
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.timeoutIntervalForRequest = 20
-            configuration.timeoutIntervalForResource = 30
-            configuration.waitsForConnectivity = false
-            self.session = URLSession(configuration: configuration)
-        }
+        else { self.session = .shared }
+        requestTimeout = session?.configuration.timeoutIntervalForRequest ?? 60
     }
 
     public func account() async throws -> SessionAccount { try await request("GET", "account") }
@@ -55,7 +51,7 @@ public actor APIClient {
     }
     public func coverData(id: UUID) async throws -> Data {
         var request = URLRequest(url: baseURL.appendingPathComponent("recipe-images/\(id.uuidString.lowercased())"))
-        request.timeoutInterval = 20
+        request.timeoutInterval = requestTimeout
         request.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200,
@@ -203,7 +199,7 @@ public actor APIClient {
         if parts.count == 2 { components.percentEncodedQuery = String(parts[1]) }
         guard let url = components.url else { throw APIError(status: 0, code: "configuration", message: "Invalid API request URL.") }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 20
+        request.timeoutInterval = requestTimeout
         request.httpMethod = method
         request.setValue("Bearer \(try await tokens.accessToken())", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

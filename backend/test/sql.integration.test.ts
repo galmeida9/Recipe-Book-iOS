@@ -243,6 +243,27 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     assert(!(await imports.list()).some(item => item.id === operatorOnly.id), "Operator fixtures never pollute a real account's Library.");
     await assert.rejects(() => imports.get(operatorOnly.id), (error: unknown) => error instanceof AppError && error.code === "import_not_found");
     assert.equal((await recovery.get(operatorOnly.id)).state, "queued", "Admin audit visibility is preserved.");
+    const retainedOutput = {
+      model: "gpt-4.1-mini-2025-04-14", requestId: "synthetic-retained-result", inputTokens: 100, outputTokens: 100,
+      response: JSON.stringify({
+        title: "Carrots", source_url: modelSource.sourceURL, servings: null, total_minutes: null, requires_review: true, warnings: [],
+        ingredients: [{ name: "carrots", quantity: 100, unit: "g", notes: null, evidence_ids: ["C0"] }],
+        steps: [{ instruction: "Simmer carrots.", duration_minutes_min: null, duration_minutes_max: null, temperature_c: null, evidence_ids: ["C0"] }]
+      })
+    };
+    await serializable(transaction => query(transaction,
+      "UPDATE dbo.ImportJobs SET State='failed',Error='Synthetic retained-validation failure',ModelResultJson=@model,Version=Version+1 WHERE Id=@id",
+      { id: resumed.id, model: JSON.stringify(retainedOutput) }));
+    const failedRetained = await imports.get(resumed.id);
+    assert.equal(failedRetained.canRetry, true);
+    const budgetBeforeRetry = await serializable(transaction => query(transaction,
+      "SELECT SpentMicros,ReservedMicros FROM dbo.ImportBudget WHERE Month=@month", { month: recoveryBudgetMonth }));
+    const localReview = await imports.retry(resumed.id, failedRetained.version);
+    assert.equal(localReview.state, "review");
+    assert.equal((await imports.retry(resumed.id, failedRetained.version)).state, "review", "A repeated local Retry acknowledgement is idempotent.");
+    assert.equal(starts, beforeRecoveryStarts, "Local validation retry never charges another provider stage.");
+    assert.deepEqual(await serializable(transaction => query(transaction,
+      "SELECT SpentMicros,ReservedMicros FROM dbo.ImportBudget WHERE Month=@month", { month: recoveryBudgetMonth })), budgetBeforeRetry);
     }
     const recipe = await alice.saveRecipe(shared.id, { title: "Soup", ingredients: [], steps: [] });
     await assert.rejects(() => outsider.recipes(shared.id), (error: unknown) => error instanceof AppError && error.code === "book_not_found");

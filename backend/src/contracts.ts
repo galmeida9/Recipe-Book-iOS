@@ -53,6 +53,8 @@ export interface ImportJob {
   destinationBookId: string | null;
   stage: "queued" | "metadata" | "audio" | "model" | "review" | "failed" | "completed" | "discarded";
   isUnseen: boolean;
+  canRetry: boolean;
+  retryReason: string | null;
 }
 export interface Principal { issuer: string; subject: string }
 

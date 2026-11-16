@@ -10,6 +10,7 @@ import { ImportPipelineProvider, approvedPipeline, initialPipeline, pipelineSche
 import type { ImportDelivery } from "./queue.js";
 import { downloadInstagramCover } from "./import-cover.js";
 import { uploadRecipeImage } from "./images.js";
+import { extractionInput, validateExtraction } from "./recipe-extraction.js";
 
 export function reserveBudget(spent: number, reserved: number, cap: number, amount: number): number {
   invariant([spent, reserved, cap, amount].every(Number.isSafeInteger) && spent >= 0 && reserved >= 0 && amount > 0,
@@ -25,6 +26,7 @@ interface JobRow {
   pipelineData: string | null;
   destinationBookId: string | null; reviewSeenVersion: number;
   operatorOnly: boolean; supersededById: string | null;
+  modelResultJson: string | null;
 }
 const columns = `CONVERT(varchar(36),Id) AS id,CONVERT(varchar(36),UserId) AS userId,SourceURL AS sourceURL,
  State AS state,Draft AS draft,Evidence AS evidence,Error AS error,Version AS version,CreatedAt AS createdAt,
@@ -32,7 +34,19 @@ const columns = `CONVERT(varchar(36),Id) AS id,CONVERT(varchar(36),UserId) AS us
  BudgetMonth AS budgetMonth,ReservedMicros AS reservedMicros,ProviderRunId AS providerRunId,
  DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline,PipelineData AS pipelineData,
  CONVERT(varchar(36),DestinationBookId) AS destinationBookId,ReviewSeenVersion AS reviewSeenVersion,
- OperatorOnly AS operatorOnly,CONVERT(varchar(36),SupersededById) AS supersededById`;
+ OperatorOnly AS operatorOnly,CONVERT(varchar(36),SupersededById) AS supersededById,ModelResultJson AS modelResultJson`;
+export function importRetryDisposition(row: Pick<JobRow, "state" | "dispatchStarted" | "pipelineData" | "modelResultJson" | "supersededById" | "operatorOnly">) {
+  if (row.state !== "failed" || row.operatorOnly || row.supersededById) return { canRetry: false, retryReason: null };
+  if (row.modelResultJson && row.pipelineData) return {
+    canRetry: true, retryReason: "Recheck the retained model result locally; no new transcription or model request will be charged."
+  };
+  const runs = row.pipelineData ? pipelineSchema.parse(JSON.parse(row.pipelineData)).runs.length : 0;
+  if (!row.dispatchStarted && runs === 0) return {
+    canRetry: true, retryReason: "Retry queue delivery before any provider dispatch; the current allowance will be checked again."
+  };
+  return { canRetry: false,
+    retryReason: "A provider request may already have been charged. Automatic repeat charging is blocked; existing evidence and the failed attempt are preserved." };
+}
 function job(row: JobRow): ImportJob {
   return {
     id: row.id.toLowerCase(), sourceURL: row.sourceURL, state: row.state, version: row.version,
@@ -42,7 +56,8 @@ function job(row: JobRow): ImportJob {
     recipeId: row.recipeId?.toLowerCase() ?? null, bookId: row.bookId?.toLowerCase() ?? null,
     destinationBookId: row.destinationBookId?.toLowerCase() ?? null,
     stage: row.state === "running" ? row.pipelineData ? pipelineSchema.parse(JSON.parse(row.pipelineData)).stage : "metadata" : row.state,
-    isUnseen: row.state === "review" && row.reviewSeenVersion < row.version
+    isUnseen: row.state === "review" && row.reviewSeenVersion < row.version,
+    ...importRetryDisposition(row)
   };
 }
 async function getJob(transaction: sql.Transaction, id: string, userId: string): Promise<JobRow> {
@@ -203,6 +218,30 @@ export class ImportService {
   }
   async retry(id: string, version: number) {
     this.requireAdmission();
+    const retained = await this.service.execute(async (transaction, userId) => {
+      const row = await getJob(transaction, id, userId);
+      invariant(!row.operatorOnly && !row.supersededById, 409, "import_recovered", "Reload the book to open this import's recovered draft.");
+      if (row.state === "review" && row.modelResultJson && row.version === version + 1) return job(row);
+      assertVersion(row.version, version);
+      if (!row.modelResultJson) return null;
+      invariant(row.state === "failed" && row.pipelineData, 409, "retry_unsafe", "This import has no retained review result.");
+      const pipeline = pipelineSchema.parse(JSON.parse(row.pipelineData));
+      invariant(pipeline.evidence?.transcript, 409, "retry_unsafe", "Cached transcript evidence is unavailable.");
+      const model = z.object({ model: z.string().max(100), requestId: z.string().max(200), inputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(), response: z.string().max(400_000) }).parse(JSON.parse(row.modelResultJson));
+      const sources = extractionInput(row.sourceURL, pipeline.evidence).evidence;
+      const reviewed = validateExtraction(JSON.parse(model.response), row.sourceURL, sources);
+      const evidence = { ...pipeline.evidence, sources, extraction: reviewed.extraction, warnings: reviewed.warnings,
+        modelExecution: { provider: "azure-credits", model: model.model, requestId: model.requestId,
+          inputTokens: model.inputTokens, outputTokens: model.outputTokens } };
+      await query(transaction, `INSERT dbo.ImportValidationAudit(JobId,PriorVersion,PriorState,PriorError,ModelRequestId,ValidatorVersion)
+        VALUES(@id,@version,@state,@error,@requestId,'local-review-retry-v1')`,
+      { id, version: row.version, state: row.state, error: row.error, requestId: model.requestId });
+      await query(transaction, "UPDATE dbo.ImportJobs SET State='review',Draft=@draft,Evidence=@evidence,Error=NULL,Version=Version+1 WHERE Id=@id",
+        { id, draft: JSON.stringify(reviewed.draft), evidence: JSON.stringify(evidence) });
+      return job(await getJob(transaction, id, userId));
+    });
+    if (retained) return retained;
     const budget = await this.provider.budget();
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);

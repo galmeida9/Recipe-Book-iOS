@@ -95,6 +95,8 @@ public struct ImportJob: Codable, Identifiable, Sendable {
     public let destinationBookId: UUID?
     public let stage: String?
     public let isUnseen: Bool?
+    public let canRetry: Bool?
+    public let retryReason: String?
 }
 
 public struct ShoppingItem: Codable, Identifiable, Sendable {

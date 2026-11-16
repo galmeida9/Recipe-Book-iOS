@@ -69,7 +69,7 @@ final class AdapterTests: XCTestCase {
         XCTAssertEqual(second.id, first.id)
         let posts = HTTPFixture.state.recordedRequests().filter { $0.httpMethod == "POST" }
         XCTAssertEqual(posts.count, 2)
-        XCTAssertEqual(posts[0].timeoutInterval, 20)
+        XCTAssertEqual(posts[0].timeoutInterval, 60)
         XCTAssertEqual(posts[0].value(forHTTPHeaderField: "Idempotency-Key"), posts[1].value(forHTTPHeaderField: "Idempotency-Key"))
         XCTAssertEqual(posts[0].value(forHTTPHeaderField: "X-Recipe-Account-ID"), accountID)
         var encoded = posts[0].httpBody
