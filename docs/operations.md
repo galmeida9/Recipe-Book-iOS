@@ -69,6 +69,45 @@ removed after the run. No Functions API or customer identity was exposed.
 installed. Portable tests do not prove SwiftUI, extension capabilities or iPhone
 installation. No SDK needs to be installed just to run TypeScript tests.
 
+## Weekly planner API
+
+Apply `backend/sql/004-planner.sql` before enabling the planner routes or shopping
+reads in this backend version. Recipe drafts accept an explicit nullable
+`mealStyle`: `simple`, `complicated` or `full`; legacy drafts default to null.
+No category is inferred from duration.
+
+All planner endpoints require the existing authenticated account/invitation gate.
+`weekStart` is a Monday date-only `yyyy-MM-dd`; slots use recipe references from
+the selected accessible book, with no stored title/image snapshots.
+
+| Method and path | Request | Result |
+| --- | --- | --- |
+| `GET /plans?bookId=UUID&weekStart=yyyy-MM-dd` | No body | Stored plan result, or JSON null |
+| `POST /plans` | `{bookId,listId,weekStart,dayStyles}`; seven nullable styles, Monday first | Generated/reconciled plan |
+| `PATCH /plans?bookId=UUID&weekStart=yyyy-MM-dd` | `{date,replacement:{recipeId,recipeVersion,servings}}`; replacement may be null | Replaced, serving-adjusted or cleared slot |
+| `DELETE /plans?bookId=UUID&weekStart=yyyy-MM-dd` | No body | `{removed:true}` |
+| `PATCH /plans/items/UUID?bookId=UUID&weekStart=yyyy-MM-dd` | `{bought:boolean}` | Updated generated check state |
+
+Use the plan's numeric `If-Match` version for every mutation of an existing plan;
+omit it only on first generation. `servings` is null only when the recipe's normal
+yield is unknown; otherwise send the normal or user-selected positive serving
+count. Quantity increases reset generated bought checks; compatible equal/reduced
+amounts preserve checks. Unknown quantities or unsupported units preserve checks
+only when both ingredient and full contribution provenance are unchanged.
+
+Shopping responses keep user rows in `items` and return automatic rows separately
+in `generated`, an array of `{planId,bookId,weekStart,planVersion,items}` sections.
+Every shopping read revalidates membership and current recipe versions in the
+same transaction, removes stale/inaccessible generated ingredients, then rereads
+the final list version. Manual rows, quantities and bought checks are not changed.
+Account deletion removes owned plans before tombstoning the account.
+
+The bounded SQL planner test is separately gated by
+`RUN_PLANNER_SQL_INTEGRATION=true`; run only
+`node --import tsx --test test/planner.sql.integration.test.ts` from `backend`
+against the explicitly owned database, with `RUN_SQL_INTEGRATION` unset. Ordinary
+`npm run check` uses local fixtures and skips both live SQL suites.
+
 ## Azure account and deployment gates
 
 GitHub login is independent of Azure login. The verified native Windows CLI is

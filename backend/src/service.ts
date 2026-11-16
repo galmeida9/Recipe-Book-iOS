@@ -6,6 +6,7 @@ import { assertVersion, invariant, draftSchema, ingredientSchema, shoppingItemSc
 import { query, serializable } from "./database.js";
 import { canEditRecipe, preserveLastOwner, requireOwner, requireShared } from "./policies.js";
 import { combineShopping } from "./shopping.js";
+import { generatedSections } from "./planner-service.js";
 
 interface BookRow { id: string; name: string; kind: BookKind; version: number }
 interface Access extends BookRow { role: Role }
@@ -66,11 +67,14 @@ async function getRecipe(transaction: sql.Transaction, bookId: string, id: strin
   return recipe(rows[0]);
 }
 async function getList(transaction: sql.Transaction, id: string, userId: string): Promise<ShoppingList> {
+  const generated = await generatedSections(transaction, userId, id);
+  // Sanitization can remove revoked or stale contributions and bump Version.
+  // Read the manual items/version only afterward, in this same transaction.
   const rows = await query<ListRow>(transaction, `
     SELECT CONVERT(varchar(36),Id) AS id,Name AS name,Items AS items,Version AS version
     FROM dbo.ShoppingLists WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id AND UserId=@userId`, { id, userId });
   invariant(rows[0], 404, "list_not_found", "Shopping list not found.");
-  return { ...rows[0], id: rows[0].id.toLowerCase(), items: z.array(shoppingItemSchema).parse(JSON.parse(rows[0].items)) };
+  return { ...rows[0], id: rows[0].id.toLowerCase(), items: z.array(shoppingItemSchema).parse(JSON.parse(rows[0].items)), generated };
 }
 async function createStoredBook(transaction: sql.Transaction, userId: string, body: { name: string; kind: BookKind }): Promise<Book> {
   const id = randomUUID();
@@ -220,6 +224,7 @@ export class RecipeBookService {
   }
   deleteAccount() {
     return this.execute(async (transaction, userId) => {
+      await query(transaction, "DELETE dbo.WeeklyPlans WHERE UserId=@userId", { userId });
       const memberships = await query<{ bookId: string }>(transaction,
         "SELECT CONVERT(varchar(36),BookId) AS bookId FROM dbo.Memberships WHERE UserId=@userId ORDER BY BookId", { userId });
       for (const membership of memberships) {
@@ -297,10 +302,13 @@ export class RecipeBookService {
       ORDER BY matchCount.matches DESC,NEWID()`, { userId, have: JSON.stringify(names) })).map(recipe));
   }
   shoppingLists() {
-    return this.execute(async (transaction, userId) => (await query<ListRow>(transaction, `
-      SELECT CONVERT(varchar(36),Id) AS id,Name AS name,Items AS items,Version AS version
-      FROM dbo.ShoppingLists WHERE UserId=@userId ORDER BY Name,Id`, { userId }))
-      .map(row => ({ ...row, id: row.id.toLowerCase(), items: z.array(shoppingItemSchema).parse(JSON.parse(row.items)) })));
+    return this.execute(async (transaction, userId) => {
+      const rows = await query<{ id: string }>(transaction, `
+        SELECT CONVERT(varchar(36),Id) AS id FROM dbo.ShoppingLists WHERE UserId=@userId ORDER BY Name,Id`, { userId });
+      const lists: ShoppingList[] = [];
+      for (const row of rows) lists.push(await getList(transaction, row.id.toLowerCase(), userId));
+      return lists;
+    });
   }
   createShoppingList(input: unknown) {
     const { name } = createListSchema.parse(input);
@@ -310,7 +318,7 @@ export class RecipeBookService {
       invariant(counts[0]!.count < 100, 409, "list_limit", "An account can have at most 100 shopping lists.");
       const id = randomUUID();
       await query(transaction, "INSERT dbo.ShoppingLists(Id,UserId,Name) VALUES(@id,@userId,@name)", { id, userId, name });
-      return { id, name, items: [], version: 1 };
+      return { id, name, items: [], generated: [], version: 1 };
     });
   }
   deleteShoppingList(id: string, version: number) {

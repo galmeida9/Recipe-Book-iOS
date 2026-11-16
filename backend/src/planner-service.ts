@@ -16,7 +16,7 @@ export const replaceSlotSchema = z.object({
 }).strict();
 interface PlanRow { id: string; bookId: string; listId: string; planData: string; generated: string; version: number }
 export interface StoredPlanResult extends PlanResult { listId: string }
-export interface GeneratedSection { planId: string; weekStart: string; planVersion: number; items: GeneratedItem[] }
+export interface GeneratedSection { planId: string; bookId: string; weekStart: string; planVersion: number; items: GeneratedItem[] }
 
 async function recipes(transaction: sql.Transaction, bookId: string): Promise<PlannerRecipe[]> {
   const rows = await query<{ id: string; bookId: string; draft: string; version: number }>(transaction, `
@@ -59,7 +59,9 @@ async function save(transaction: sql.Transaction, userId: string, listId: string
 /** Uses the foundation account gate and book lock; never stores recipe titles or images. */
 export class PlannerService {
   private readonly service: RecipeBookService;
-  constructor(principal: Principal) { this.service = new RecipeBookService(principal); }
+  constructor(principal: Principal | RecipeBookService) {
+    this.service = principal instanceof RecipeBookService ? principal : new RecipeBookService(principal);
+  }
   get(bookId: string, start: string): Promise<StoredPlanResult | null> {
     bookId = idSchema.parse(bookId); start = weekStartSchema.parse(start);
     return this.service.execute(async (transaction, userId) => {
@@ -164,7 +166,8 @@ export async function generatedSections(transaction: sql.Transaction, userId: st
         { id: row.id, generated: JSON.stringify(result.generated), plan: JSON.stringify(stored.plan), version: stored.plan.version });
       await bumpList(transaction, listId);
     }
-    sections.push({ planId: stored.plan.id, weekStart: stored.plan.weekStart, planVersion: stored.plan.version, items: result.generated });
+    sections.push({ planId: stored.plan.id, bookId: stored.plan.bookId, weekStart: stored.plan.weekStart,
+      planVersion: stored.plan.version, items: result.generated });
   }
   return sections;
 }

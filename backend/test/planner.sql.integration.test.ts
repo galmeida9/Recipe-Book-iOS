@@ -44,6 +44,11 @@ test("SQL planner: atomic reconciliation, stale versions, manual isolation and r
     assert.equal(result.generated[0]!.ingredient.quantity, "7000");
     assert.equal(result.generated[0]!.contributions.length, 7);
     assert.deepEqual(JSON.parse((await rawList(list.id)).items), [manual]);
+    const shopping = (await owner.shoppingLists()).find(value => value.id === list.id)!;
+    assert.deepEqual(shopping.items, [manual]);
+    assert.equal(shopping.generated[0]!.bookId, book.id);
+    assert.deepEqual(shopping.generated[0]!.items, result.generated);
+    assert.equal(shopping.version, (await rawList(list.id)).version);
     await assert.rejects(() => planner.generate(input), code("version_conflict"));
     await assert.rejects(() => outsiderPlanner.get(book.id, weekStart), code("book_not_found"));
     await assert.rejects(() => memberPlanner.generate(input), code("list_not_found"));
@@ -72,6 +77,10 @@ test("SQL planner: atomic reconciliation, stale versions, manual isolation and r
     const rejected = races.find(value => value.status === "rejected");
     assert.ok(rejected?.status === "rejected" && rejected.reason instanceof AppError && rejected.reason.code === "version_conflict");
     await owner.saveRecipe(book.id, { ...recipe.draft, title: "Changed fixture recipe" }, recipe.id, recipe.version);
+    const sanitizedShopping = (await owner.shoppingLists()).find(value => value.id === list.id)!;
+    assert.equal(sanitizedShopping.generated[0]!.items.length, 0);
+    assert.equal(sanitizedShopping.version, (await rawList(list.id)).version);
+    assert.deepEqual(sanitizedShopping.items, [manual]);
     const sanitized = (await planner.get(book.id, weekStart))!;
     assert.equal(sanitized.generated.length, 0);
     assert.ok(sanitized.plan.days.every(day => day.slot === null));
@@ -96,6 +105,10 @@ test("SQL planner: atomic reconciliation, stale versions, manual isolation and r
     await owner.deleteShoppingList(list.id, currentList.version);
     assert.equal(await planner.get(book.id, weekStart), null, "Deleting a list cascades its plan and all generated provenance.");
     assert.equal(next.generated.length, 0);
+    await member.deleteAccount();
+    const remaining = await owner.execute((transaction) => query<{ count: number }>(transaction,
+      "SELECT COUNT(*) AS count FROM dbo.WeeklyPlans WHERE UserId=@userId", { userId: memberId }));
+    assert.equal(remaining[0]!.count, 0);
   } finally {
     await serializable(async transaction => {
       await query(transaction, `DELETE dbo.WeeklyPlans WHERE UserId IN(SELECT Id FROM dbo.Accounts WHERE Issuer=@issuer)`, { issuer });

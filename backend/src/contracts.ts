@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GeneratedSection } from "./planner-service.js";
 
 export const idSchema = z.string().uuid().transform(value => value.toLowerCase());
 export const ingredientSchema = z.object({
@@ -13,6 +14,7 @@ export const draftSchema = z.object({
   steps: z.array(z.string().trim().min(1).max(4000)).max(100),
   servings: z.number().int().min(1).max(1000).nullable().default(null),
   totalMinutes: z.number().int().min(1).max(100_000).nullable().default(null),
+  mealStyle: z.enum(["simple", "complicated", "full"]).nullable().default(null),
   sourceURL: z.string().url().max(2048).nullable().default(null)
   ,mealStyle: z.enum(["simple", "complicated", "full"]).nullable().default(null)
   ,coverImageID: z.string().uuid().transform(value => value.toLowerCase()).nullable().default(null)
@@ -30,7 +32,7 @@ export type Role = "owner" | "member";
 export type BookKind = "personal" | "shared";
 export interface Book { id: string; name: string; kind: BookKind; role: Role; version: number }
 export interface Recipe { id: string; bookId: string; authorId: string; draft: RecipeDraft; version: number }
-export interface ShoppingList { id: string; name: string; items: ShoppingItem[]; version: number }
+export interface ShoppingList { id: string; name: string; items: ShoppingItem[]; generated: GeneratedSection[]; version: number }
 export interface Evidence { caption: string | null; comments: string[]; transcript: string | null }
 export type ImportState = "queued" | "running" | "review" | "failed" | "completed" | "discarded";
 export interface ImportJob {

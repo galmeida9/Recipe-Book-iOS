@@ -7,6 +7,8 @@ import { ImportService, importDelivery, failImportDelivery, processImport } from
 import { enqueueImport } from "./queue.js";
 import { readRecipeImage, uploadRecipeImage } from "./images.js";
 import { oauthRoute } from "./oauth.js";
+import { PlannerService } from "./planner-service.js";
+import { weekStartSchema } from "./planner.js";
 import "./bootstrap.js";
 
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
@@ -21,12 +23,17 @@ async function body(request: HttpRequest, maximum = 300_000): Promise<unknown> {
   try { return JSON.parse(text); }
   catch { throw new AppError(400, "invalid_json", "Send a valid JSON object."); }
 }
-async function dispatch(request: HttpRequest, service: RecipeBookService): Promise<HttpResponseInit> {
+export async function dispatch(request: HttpRequest, service: RecipeBookService,
+  planner: PlannerService = new PlannerService(service)): Promise<HttpResponseInit> {
   const path = (request.params["path"] ?? "").split("/").filter(Boolean);
   const method = request.method;
   const imports = new ImportService(service);
   const id = (index: number) => idSchema.parse(path[index]);
   const version = () => expectedVersion(request.headers.get("if-match"));
+  const planIdentity = () => ({
+    bookId: idSchema.parse(request.query.get("bookId")),
+    weekStart: weekStartSchema.parse(request.query.get("weekStart"))
+  });
   let result: unknown;
   if (path.length === 1 && path[0] === "account") {
     if (method === "GET") result = await service.me();
@@ -35,6 +42,23 @@ async function dispatch(request: HttpRequest, service: RecipeBookService): Promi
   } else if (path.length === 1 && path[0] === "local-book-copies" && method === "POST") {
     result = await service.copyLocalBook(await body(request), idSchema.parse(request.headers.get("idempotency-key")),
       idSchema.parse(request.headers.get("x-recipe-account-id")));
+  } else if (path[0] === "plans") {
+    if (path.length === 1 && method === "POST") {
+      const expected = request.headers.has("if-match") ? version() : null;
+      result = await planner.generate(await body(request), expected);
+    } else if (path.length === 1 && ["GET", "PATCH", "DELETE"].includes(method)) {
+      const { bookId, weekStart } = planIdentity();
+      if (method === "GET") result = await planner.get(bookId, weekStart);
+      else if (method === "PATCH") result = await planner.replace(bookId, weekStart, await body(request), version());
+      else {
+        await planner.remove(bookId, weekStart, version());
+        result = { removed: true };
+      }
+    } else if (path.length === 3 && path[1] === "items" && method === "PATCH") {
+      const { bookId, weekStart } = planIdentity();
+      const input = z.object({ bought: z.boolean() }).strict().parse(await body(request));
+      result = await planner.check(bookId, weekStart, id(2), input.bought, version());
+    }
   } else if (path[0] === "books") {
     if (path.length === 1) {
       if (method === "GET") result = await service.books();
