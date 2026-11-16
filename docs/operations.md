@@ -454,6 +454,27 @@ session and export it to this protected group before the first Instagram share.
 If SideStore/iOS does not authorize the group, the app or share sheet reports
 that failure; metadata packaging alone does not grant authorization.
 
+The subsequent real-phone regression had two independent causes: a source
+validator rejected an explicit localized unit and blocked the entire review,
+while the Library's legacy unbound-import cards displayed operator test data
+with relative wall-clock time. Global import cards/timers are now removed.
+Book acknowledgements upsert immediately; visible per-book polling preserves
+cached content and cancels on navigation. App API requests have 20/30-second
+request/resource bounds, AppAuth 15/20-second bounds, and shared Keychain
+coordination uses a nonblocking OS file lock rather than a potentially
+MainActor-blocking file-coordination wait.
+
+`009-import-visibility.sql` distinguishes operator-only proof jobs and superseded
+failures without deleting their audit/charge history. It also retains completed
+model output before local semantic validation. `010-import-validation-audit.sql`
+records deterministic revalidation of that same output, without new inference.
+Only explicitly authorized operator proof IDs were hidden; real account books,
+recipes and current import evidence were not deleted. The affected book's actual
+recipe was recovered with localized explicit measures, unknown unconfirmed
+amounts/total time and source-grounded method citations. Its original failure and
+the recovery's prior validation error remain auditable; budget settlement was
+not refunded or repeated.
+
 The optional `IMPORT_RUNTIME_PROBE_ENABLED=true` workload proof is registered
 only as an Azure Functions **admin-key** endpoint at `_bootstrap/import`.
 It also requires the exact existing approved account in

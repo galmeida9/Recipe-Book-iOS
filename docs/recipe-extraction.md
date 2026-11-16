@@ -47,11 +47,20 @@ as JSON-schema enums. Structured quantities, ordered instructions, times,
 warnings and citations are validated before an editable review draft appears.
 Source text is data, never authority to execute commands or change the workflow.
 
-Unsupported IDs, food names, amounts, units, numbers, cooking times, temperatures,
-inferred servings/total time, ungrounded instruction wording and review bypass
-fail closed. Explicit conflicting amounts detected across evidence become
+Unsupported IDs, food names, instruction numbers/actions, cooking times and
+review bypass fail closed. An unconfirmed ingredient amount/unit or inferred
+total time becomes null with an explicit review warning, not a failed whole
+recipe or a confirmed shopping quantity. Explicit conflicting amounts become
 unknown, with source alternatives in review warnings. Unknown quantities do not
 become confirmed numeric groceries. User approval remains mandatory.
+
+Localized explicit units such as Portuguese `c. sopa` normalize to `tbsp`
+without density or batch-size guesses. An explicit approximate source yield
+is flagged as approximate. A cited ingredient's already-validated caption can
+support its precise name in a narrated method; unambiguous shortened references
+retain that ingredient citation, while new foods/actions and ambiguous facts
+remain invalid. Completed raw model output is retained privately before
+validation so diagnosis/revalidation never requires another paid model call.
 
 These are deliberately conservative syntactic/source-fact checks, **not a proof
 of semantic entailment** for arbitrary narration or languages. Ambiguous

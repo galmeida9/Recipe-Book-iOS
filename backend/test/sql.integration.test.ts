@@ -190,7 +190,8 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     shared = await alice.addMember(shared.id, bobId, shared.version);
     async function verifyCachedModelRecovery() {
     activeBudgetMonth = recoveryBudgetMonth;
-    const modelSource = await createImport("https://www.instagram.com/reel/CachedModelRecovery/");
+    const modelKey = randomUUID();
+    const modelSource = await createImport("https://www.instagram.com/reel/CachedModelRecovery/", modelKey);
     for (let stage = 0; stage < 5; stage++) await processImport(modelSource.id, provider);
     modelFails = true;
     await assert.rejects(() => processImport(modelSource.id, provider), /definitive model gateway denial/);
@@ -227,7 +228,13 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     assert.equal(recovered.destinationBookId, shared.id);
     assert.equal(recovered.draft!.sourceURL, originalFailure.sourceURL);
     assert.equal((await recovery.resumeCachedModel(modelSource.id, recoveryKey)).id, resumed.id);
-    assert.equal((await recovery.get(modelSource.id)).state, "failed");
+    const originalAudit = await serializable(transaction => query<{ state: string }>(transaction,
+      "SELECT State AS state FROM dbo.ImportJobs WHERE Id=@id", { id: modelSource.id }));
+    assert.equal(originalAudit[0]!.state, "failed");
+    assert.equal((await imports.get(modelSource.id)).id, resumed.id, "An old visible job link resolves to its completed recovery.");
+    assert.equal((await createImport(modelSource.sourceURL, modelKey)).id, resumed.id, "Sharing the same source/book again reuses recovery without another charge.");
+    await assert.rejects(() => imports.discard(modelSource.id, originalFailure.version),
+      (error: unknown) => error instanceof AppError && error.code === "import_recovered");
     assert.equal(starts, beforeRecoveryStarts, "Model-only recovery never starts another metadata/audio/relay run.");
     const listed = await imports.list(shared.id);
     assert(!listed.some(item => item.id === modelSource.id), "Superseded failures stay in the audit history, not the book's active cards.");

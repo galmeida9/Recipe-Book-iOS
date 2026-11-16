@@ -52,6 +52,21 @@ async function getJob(transaction: sql.Transaction, id: string, userId: string):
   if (rows[0].destinationBookId) await bookAccess(transaction, rows[0].destinationBookId, userId);
   return rows[0];
 }
+async function effectiveJob(transaction: sql.Transaction, original: JobRow, userId: string): Promise<JobRow> {
+  let current = original;
+  const visited = new Set([original.id.toLowerCase()]);
+  while (current.supersededById) {
+    const id = current.supersededById.toLowerCase();
+    invariant(!visited.has(id) && visited.size < 16, 500, "import_chain", "The import recovery history is inconsistent.");
+    visited.add(id);
+    const next = await getJob(transaction, id, userId);
+    invariant(next.sourceURL === original.sourceURL && next.operatorOnly === original.operatorOnly &&
+      next.destinationBookId?.toLowerCase() === original.destinationBookId?.toLowerCase(),
+    500, "import_chain", "The recovered import does not match the original source and destination.");
+    current = next;
+  }
+  return current;
+}
 async function reserve(transaction: sql.Transaction, budget: ProviderBudget): Promise<void> {
   const rows = await query<{ spent: number; reserved: number; cap: number }>(transaction,
     "SELECT SpentMicros AS spent,ReservedMicros AS reserved,CapMicros AS cap FROM dbo.ImportBudget WITH(UPDLOCK,HOLDLOCK) WHERE Month=@month",
@@ -126,7 +141,7 @@ export class ImportService {
       await expireUndelivered(transaction, userId);
       const row = await getJob(transaction, id, userId);
       invariant(!row.operatorOnly || this.admission === "operator-proof", 404, "import_not_found", "Import job not found.");
-      return job(row);
+      return job(await effectiveJob(transaction, row, userId));
     });
   }
   async create(input: unknown, key: string, expectedAccountId?: string) {
@@ -146,7 +161,7 @@ export class ImportService {
       const current = await getJob(transaction, requests[0].jobId, userId);
       invariant(!current.operatorOnly || this.admission === "operator-proof", 404, "import_not_found", "Import job not found.");
       invariant((current.destinationBookId?.toLowerCase() ?? null) === (destination ?? null), 409, "idempotency_conflict", "This import key belongs to a different destination book.");
-      return job(current);
+      return job(await effectiveJob(transaction, current, userId));
     });
     if (existing) return existing;
     const budget = await this.provider.budget();
@@ -160,7 +175,7 @@ export class ImportService {
         const current = await getJob(transaction, requests[0].jobId, userId);
         invariant(!current.operatorOnly || this.admission === "operator-proof", 404, "import_not_found", "Import job not found.");
         invariant((current.destinationBookId?.toLowerCase() ?? null) === (destination ?? null), 409, "idempotency_conflict", "This import key belongs to a different destination book.");
-        return job(current);
+        return job(await effectiveJob(transaction, current, userId));
       }
       const duplicate = await query<JobRow>(transaction,
         `SELECT TOP(1) ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK)
@@ -211,6 +226,7 @@ export class ImportService {
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
       invariant(!row.operatorOnly, 404, "import_not_found", "Import job not found.");
+      invariant(!row.supersededById, 409, "import_recovered", "This import has a recovered draft. Reload its book before changing it.");
       assertVersion(row.version, version);
       invariant(!["queued", "running", "completed"].includes(row.state), 409, "import_busy", "Only review drafts or failed jobs can be discarded.");
       await query(transaction, "UPDATE dbo.ImportJobs SET State='discarded',Draft=NULL,Evidence=NULL,Version=Version+1 WHERE Id=@id", { id });
