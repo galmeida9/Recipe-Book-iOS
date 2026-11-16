@@ -5,6 +5,7 @@ import type { HttpRequest, HttpResponseInit } from "@azure/functions";
 import { AppError, invariant, requiredSetting, type Principal } from "./contracts.js";
 import { googleAuthenticator } from "./auth.js";
 import { serializable, query } from "./database.js";
+import { beginOAuthTrace } from "./oauth-diagnostics.js";
 
 export const nativeOAuthCallback = "recipebook://oauth";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -183,10 +184,40 @@ function providerError(error: unknown, message: string) {
       error.response.status >= 400 && error.response.status < 500) return new AppError(400, "invalid_grant", message);
   return new AppError(503, "identity_unavailable", "Google sign-in is temporarily unavailable. Try again with a new sign-in request.");
 }
+export async function readOAuthForm(request: Pick<HttpRequest, "body">, timeoutMs = 15_000,
+  trace: ReturnType<typeof beginOAuthTrace> = () => {}): Promise<string> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      trace("body_timeout");
+      reject(new AppError(503, "temporarily_unavailable", "The sign-in request body did not arrive in time. Start a new sign-in request; its code was not replayed."));
+    }, timeoutMs);
+  });
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), deadline]);
+      if (done) break;
+      size += value.byteLength;
+      invariant(size <= 16384, 413, "request_limit", "Sign-in request exceeded the limit.");
+      chunks.push(value);
+    }
+    trace("body_read");
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => trace("body_cancel_failed"));
+  }
+}
 export async function oauthRoute(request: HttpRequest, diagnose: (event: OAuthDiagnostic) => void = () => {}): Promise<HttpResponseInit | null> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api\//, "/");
   if (!path.startsWith("/auth/google/")) return null;
+  const trace = beginOAuthTrace();
+  if (request.method === "POST" && path === "/auth/google/token") trace("http_received");
   const clientID = requiredSetting("GOOGLE_SERVER_CLIENT_ID");
   googleAuthenticator({ serverClientID: clientID });
   const secret = requiredSetting("GOOGLE_OAUTH_CLIENT_SECRET");
@@ -195,16 +226,19 @@ export async function oauthRoute(request: HttpRequest, diagnose: (event: OAuthDi
   invariant(/^[a-z0-9.-]+\.azurewebsites\.net$/.test(host), 503, "configuration", "The verified HTTPS server callback host is required.");
   const provider = new GoogleOAuthProvider(clientID, secret, `https://${host}/api/auth/google/callback`);
   const broker = new OAuthBroker(clientID, new SQLFlowStore(), provider,
-    (token, nonce) => googleAuthenticator({ serverClientID: clientID, ...(nonce === undefined ? {} : { nonce }) })("Bearer " + token), diagnose);
+    (token, nonce) => googleAuthenticator({ serverClientID: clientID, ...(nonce === undefined ? {} : { nonce }) })("Bearer " + token),
+    event => { trace(event.phase); diagnose(event); });
   if (request.method === "GET" && path === "/auth/google/config") return { status: 200, jsonBody: broker.config(), headers };
   if (request.method === "GET" && path === "/auth/google/authorize") return { status: 302, headers: { ...headers, Location: await broker.authorize(unique(url.searchParams)) } };
   if (request.method === "GET" && path === "/auth/google/callback") return { status: 302, headers: { ...headers, Location: await broker.callback(unique(url.searchParams)) } };
   if (request.method === "POST" && path === "/auth/google/token") {
     invariant(request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded", 415, "content_type", "Send a standard OAuth form.");
-    const text = await request.text();
-    invariant(Buffer.byteLength(text) <= 16384, 413, "request_limit", "Sign-in request exceeded the limit.");
-    try { return { status: 200, jsonBody: await broker.token(unique(new URLSearchParams(text))), headers }; }
+    try {
+      const text = await readOAuthForm(request, 15_000, trace);
+      return { status: 200, jsonBody: await broker.token(unique(new URLSearchParams(text))), headers };
+    }
     catch (error) {
+      trace("token_failed");
       diagnose({ phase: "token_failed", elapsedMs: 0, outcome: error instanceof AppError ? error.code : "server_error" });
       if (error instanceof AppError) return {
         status: error.status < 500 ? 400 : error.status,
