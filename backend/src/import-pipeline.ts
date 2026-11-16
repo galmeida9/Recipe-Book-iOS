@@ -22,8 +22,8 @@ const stageActors = {
 } as const;
 export function approvedPipeline() {
   invariant(["APIFY_ENABLED", "APIFY_FREE_PLAN_VERIFIED", "APIFY_NO_OVERAGES_VERIFIED", "APIFY_ACCOUNT_EXCLUSIVE",
-    "APIFY_PIPELINE_TERMS_VERIFIED", "APIFY_PIPELINE_PRICING_VERIFIED"].every(name => process.env[name] === "true"),
-  503, "provider_not_approved", "Instagram imports are disabled until runtime account, no-overage limits, actor pricing and data terms are verified.");
+    "APIFY_PIPELINE_REVIEW_ACKNOWLEDGED", "APIFY_PIPELINE_PRICING_VERIFIED"].every(name => process.env[name] === "true"),
+  503, "provider_not_approved", "Instagram imports are disabled until account limits and pricing are verified and the operator acknowledges the provider/data review.");
   const stages = Object.fromEntries(Object.keys(stageActors).map(key => {
     const stage = key as keyof typeof stageActors;
     const build = requiredSetting(`APIFY_${stage.toUpperCase()}_BUILD`);

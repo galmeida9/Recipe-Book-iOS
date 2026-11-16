@@ -386,7 +386,7 @@ Server-only settings:
 | `APIFY_NO_OVERAGES_VERIFIED` | Free-plan spending/overage limit remains enabled |
 | `APIFY_ACCOUNT_EXCLUSIVE` | No independent charged jobs outside this backend budget |
 | `APIFY_TOKEN` | Key Vault reference, never app/repo/chat |
-| `APIFY_PIPELINE_TERMS_VERIFIED` | Reviewed data-processing/public-source terms |
+| `APIFY_PIPELINE_REVIEW_ACKNOWLEDGED` | Operator acknowledges provider/data/terms assessment; not verified legal status or a published exception |
 | `APIFY_PIPELINE_PRICING_VERIFIED` | Actual charging-model/hard-cap compatibility for all three actors |
 | `APIFY_METADATA_BUILD`, `APIFY_AUDIO_BUILD`, `APIFY_MODEL_BUILD` | Reviewed pinned numeric builds |
 | `APIFY_METADATA_CAP_MICROS`, `APIFY_AUDIO_CAP_MICROS`, `APIFY_MODEL_CAP_MICROS` | Per-stage hard caps; total at most USD 1 |

@@ -6,7 +6,7 @@ import type { ProviderRun } from "../src/apify.js";
 function configure() {
   Object.assign(process.env, {
     APIFY_ENABLED: "true", APIFY_FREE_PLAN_VERIFIED: "true", APIFY_NO_OVERAGES_VERIFIED: "true",
-    APIFY_ACCOUNT_EXCLUSIVE: "true", APIFY_PIPELINE_TERMS_VERIFIED: "true", APIFY_PIPELINE_PRICING_VERIFIED: "true",
+    APIFY_ACCOUNT_EXCLUSIVE: "true", APIFY_PIPELINE_REVIEW_ACKNOWLEDGED: "true", APIFY_PIPELINE_PRICING_VERIFIED: "true",
     APIFY_METADATA_BUILD: "1.2.3", APIFY_AUDIO_BUILD: "2.3.4", APIFY_MODEL_BUILD: "3.4.5",
     APIFY_METADATA_CAP_MICROS: "10000", APIFY_AUDIO_CAP_MICROS: "10000", APIFY_MODEL_CAP_MICROS: "10000",
     APIFY_TOKEN: "synthetic-test-only"
@@ -16,6 +16,10 @@ const url = "https://www.instagram.com/reel/publicRecipe/";
 const run: ProviderRun = { id: "run", status: "SUCCEEDED", defaultDatasetId: "dataset",
   options: { maxTotalChargeUsd: 0.01, isMaxTotalChargeUsdSetByUser: true } };
 test("production pipeline requires explicit account/data/pricing approval and reserves all three stages", () => {
+  configure();
+  delete process.env["APIFY_PIPELINE_REVIEW_ACKNOWLEDGED"];
+  process.env["APIFY_PIPELINE_TERMS_VERIFIED"] = "true";
+  assert.throws(() => approvedPipeline(), /disabled/);
   configure();
   delete process.env["APIFY_PIPELINE_PRICING_VERIFIED"];
   assert.throws(() => approvedPipeline(), /disabled/);

@@ -46,7 +46,7 @@ setting a request option does not establish that compatibility.
 
 Require `APIFY_ENABLED`, `APIFY_FREE_PLAN_VERIFIED`,
 `APIFY_NO_OVERAGES_VERIFIED`, `APIFY_ACCOUNT_EXCLUSIVE`,
-`APIFY_PIPELINE_TERMS_VERIFIED` and `APIFY_PIPELINE_PRICING_VERIFIED`, all explicitly
+`APIFY_PIPELINE_REVIEW_ACKNOWLEDGED` and `APIFY_PIPELINE_PRICING_VERIFIED`, all explicitly
 `true`. For each of `METADATA`, `AUDIO`, `MODEL`, configure
 `APIFY_<STAGE>_BUILD` as a reviewed numeric build and
 `APIFY_<STAGE>_CAP_MICROS` as a positive hard cap. Their **sum** (maximum USD 1)
@@ -120,7 +120,11 @@ not suitable for consumers. The document does not establish whether this
 project's development use qualifies. A logged-in Free account alone proves
 neither eligibility nor ineligibility; obtain applicable account-agreement or
 provider clarification without requesting personal legal status. Do not set the
-terms-verification flag while this remains unresolved. Under
+operator-review flag solely on the basis of account login. The owner has reviewed
+the caveat and directed proceeding with private use for the owner and partner.
+`APIFY_PIPELINE_REVIEW_ACKNOWLEDGED` records that integration assessment only;
+it does not assert business eligibility, a published exception, provider
+endorsement, or legal advice. A provider denial must be surfaced, not bypassed. Under
 [Actor Terms sections 4 and 9](https://docs.apify.com/legal/actor-terms-and-conditions),
 community creators can access inputs/outputs and are not Apify DPA
 subprocessors. The model actor additionally forwards prompts to the selected
