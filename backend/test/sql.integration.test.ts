@@ -229,6 +229,13 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     assert.equal((await recovery.resumeCachedModel(modelSource.id, recoveryKey)).id, resumed.id);
     assert.equal((await recovery.get(modelSource.id)).state, "failed");
     assert.equal(starts, beforeRecoveryStarts, "Model-only recovery never starts another metadata/audio/relay run.");
+    const listed = await imports.list(shared.id);
+    assert(!listed.some(item => item.id === modelSource.id), "Superseded failures stay in the audit history, not the book's active cards.");
+    assert(listed.some(item => item.id === resumed.id));
+    const operatorOnly = await recovery.create({ sourceURL: "https://www.instagram.com/reel/HiddenOperatorFixture/", bookId: shared.id }, randomUUID());
+    assert(!(await imports.list()).some(item => item.id === operatorOnly.id), "Operator fixtures never pollute a real account's Library.");
+    await assert.rejects(() => imports.get(operatorOnly.id), (error: unknown) => error instanceof AppError && error.code === "import_not_found");
+    assert.equal((await recovery.get(operatorOnly.id)).state, "queued", "Admin audit visibility is preserved.");
     }
     const recipe = await alice.saveRecipe(shared.id, { title: "Soup", ingredients: [], steps: [] });
     await assert.rejects(() => outsider.recipes(shared.id), (error: unknown) => error instanceof AppError && error.code === "book_not_found");

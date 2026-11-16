@@ -67,3 +67,14 @@ test("oversized input, rate limits and mismatched/refused/truncated results fail
     await assert.rejects(() => new AzureRecipeExtractor(async () => Response.json(value), async () => "synthetic").extract(url, evidence));
   }
 });
+test("completed model output is journaled before semantic validation, avoiding a paid rerun to inspect a rejection", async () => {
+  configure();
+  const value = output();
+  const recipe = JSON.parse(value.choices[0]!.message.content);
+  recipe.ingredients[0].name = "unsupported sugar";
+  value.choices[0]!.message.content = JSON.stringify(recipe);
+  let preserved = "";
+  const provider = new AzureRecipeExtractor(async () => Response.json(value), async () => "synthetic");
+  await assert.rejects(() => provider.extract(url, evidence, async result => { preserved = result.response; }), /ingredient is not supported/);
+  assert.match(preserved, /unsupported sugar/);
+});

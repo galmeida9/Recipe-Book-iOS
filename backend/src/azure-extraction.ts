@@ -5,6 +5,9 @@ import { extractionInput, extractionJSONSchema, extractionRules, validateExtract
 
 const model = "gpt-4.1-mini";
 const version = "2025-04-14";
+export interface AzureModelResult {
+  model: string; requestId: string; inputTokens: number; outputTokens: number; response: string;
+}
 export function approvedAzureModel() {
   invariant(["AZURE_MODEL_CREDITS_VERIFIED", "AZURE_MODEL_SPENDING_LIMIT_VERIFIED", "AZURE_MODEL_DEPLOYMENT_VERIFIED"]
     .every(name => process.env[name] === "true"), 503, "azure_model_not_approved",
@@ -62,7 +65,7 @@ export class AzureRecipeExtractor {
     z.object({ data: z.array(z.object({ id: z.string() })) }).parse(await this.request("openai/models?api-version=2024-10-21", "GET"));
     return { model, version, reachable: true, billing: "verified-Azure-credits-token-consumption" };
   }
-  async extract(sourceURL: string, evidence: Evidence) {
+  async extract(sourceURL: string, evidence: Evidence, preserve?: (result: AzureModelResult) => Promise<void>) {
     const config = approvedAzureModel();
     const input = extractionInput(sourceURL, evidence);
     const response = z.object({
@@ -82,6 +85,8 @@ export class AzureRecipeExtractor {
     }));
     const message = response.choices[0]!.message;
     invariant(!message.refusal && !message.function_call, 502, "model_refusal", "The model refused extraction or returned an unsupported function call.");
+    if (preserve) await preserve({ model: response.model, requestId: response.id, inputTokens: response.usage.prompt_tokens,
+      outputTokens: response.usage.completion_tokens, response: message.content });
     const review = validateExtraction(JSON.parse(message.content), sourceURL, input.evidence);
     return { review, evidence: { ...evidence, sources: input.evidence, extraction: review.extraction, warnings: review.warnings,
       modelExecution: { provider: "azure-credits" as const, model: response.model, requestId: response.id,

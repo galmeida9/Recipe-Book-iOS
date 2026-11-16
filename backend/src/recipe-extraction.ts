@@ -34,7 +34,7 @@ Cite only supplied evidence IDs. Each citation must support every material fact,
 Preserve all supported ingredients. Parse fractions exactly (3/4=0.75); normalize unit spelling only, never convert cups to grams or infer a regional cup size.
 Unknown quantity/unit/servings/total time/temperature/duration is null, never zero. A per-sandwich ratio is not a batch quantity.
 Unresolved conflicting quantities MUST be null with all source alternatives in warnings. Never choose one even when a caption is clearer.
-Write clear imperative instructions in source order, preserving refrigerator versus freezer and serving/storage instructions. Reuse source wording rather than introducing synonyms.
+Write clear imperative instructions in source order, preserving refrigerator versus freezer and serving/storage instructions. Keep ingredient names and instructions in the evidence's language; do not translate. Reuse source wording rather than introducing synonyms or additional cooking actions.
 Preserve explicit durations/ranges/temperatures in both readable instructions and structured fields; equal duration bounds for a single time.
 Do not use video length or transcript timestamps as cooking time, infer servings from counts, or sum incomplete times into total time.
 Preserve exact source_url. requires_review is ALWAYS true; user must edit/review before saving.
@@ -99,8 +99,32 @@ export function extractionJSONSchema(ids: string[]) {
   });
 }
 const normalized = (text: string) => text.toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "").replace(/\u2044/g, "/")
+  .replace(/(\d),(?=\d)/g, "$1.")
   .replace(/[’']/g, "").replace(/[^a-z0-9/.\s-]/g, " ");
-const words = (text: string) => normalized(text).split(/\s+/).map(word => word.replace(/^[.-]+|[.-]+$/g, "").replace(/(?:es|s)$/, "")).filter(Boolean);
+const actionWords: Record<string, string> = {
+  lavar: "wash", lave: "wash", lavadas: "wash",
+  assar: "bake", asse: "bake", assadas: "bake", assados: "bake",
+  coloque: "put", colocar: "put", coloco: "put", leve: "put", vai: "put", junte: "put", entrar: "put",
+  dispor: "arrange", disponha: "arrange", esmagados: "crush", esmagado: "crush", esmague: "crush",
+  picar: "chop", picada: "chop", picadas: "chop", pique: "chop",
+  refogar: "saute", refogue: "saute", saltear: "saute", salteie: "saute",
+  confitar: "confit", confite: "confit", confitada: "confit", confitadas: "confit",
+  arrefecer: "cool", arrefeca: "cool", deixe: "leave", deixar: "leave",
+  sacudir: "shake", sacuda: "shake", abrir: "open", abra: "open",
+  cozinhar: "cook", cozinhe: "cook", cozinhada: "cook", cozida: "cook", cozidas: "cook", cozido: "cook",
+  tostar: "toast", toste: "toast", retire: "remove", retirar: "remove",
+  reserve: "reserve", reservar: "reserve", finalize: "finish", finalizar: "finish",
+  aquecido: "preheat", aquecida: "preheat", aqueca: "preheat", preaquecido: "preheat", preaqueca: "preheat", preaquecer: "preheat",
+  humida: "wet", humidas: "wet", umida: "wet", umidas: "wet",
+  dourada: "golden", douradas: "golden", douradinha: "golden", douradinhas: "golden", douradinhos: "golden",
+  servir: "serve", servidas: "serve", sirva: "serve",
+  minuto: "minute", minutos: "minute", minutes: "minute", min: "minute", mins: "minute",
+  horas: "hour", hora: "hour", segundos: "second", segundo: "second"
+};
+const words = (text: string) => normalized(text).split(/[\s-]+/).map(word => {
+  const clean = word.replace(/^[.-]+|[.-]+$/g, "");
+  return actionWords[clean] ?? clean.replace(/(?:es|s)$/, "");
+}).filter(Boolean);
 const amountPattern = String.raw`(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?)`;
 function amount(text: string): number {
   return text.trim().split(/\s+/).reduce((sum, token) => {
@@ -111,19 +135,26 @@ function amount(text: string): number {
 const unitNames: Record<string, string> = {
   gram: "g", grams: "g", kilogram: "kg", kilograms: "kg", milliliter: "ml", milliliters: "ml", liter: "l", liters: "l",
   ounce: "oz", ounces: "oz", pound: "lb", pounds: "lb", cups: "cup", teaspoon: "tsp", teaspoons: "tsp",
-  tablespoon: "tbsp", tablespoons: "tbsp", pieces: "piece"
+  tablespoon: "tbsp", tablespoons: "tbsp", pieces: "piece",
+  "c. sopa": "tbsp", "c sopa": "tbsp", "c. de sopa": "tbsp", "c de sopa": "tbsp",
+  "colher de sopa": "tbsp", "colheres de sopa": "tbsp",
+  "c. cha": "tsp", "c cha": "tsp", "colher de cha": "tsp", "colheres de cha": "tsp",
+  gramas: "g", quilogramas: "kg", litros: "l", mililitros: "ml"
 };
 function ingredientAmounts(name: string, sources: ExtractionSource[]) {
   const tokens = words(name).filter(word => word.length > 1);
   const found: { quantity: number; unit: string | null; id: string }[] = [];
   for (const source of sources) {
-    for (const clause of normalized(source.text).split(/[;\n]|(?<=[a-z])\.(?:\s|$)/)) {
+    const text = normalized(source.text).replace(/\bc\.\s*(?:de\s*)?(sopa|cha)\b/g, "c $1")
+      .replace(/\b(tsp|tbsp)\.(?=\s)/g, "$1");
+    for (const clause of text.split(/[;\n]|(?<=[a-z])\.(?:\s|$)/)) {
       if (/^\s*(?:arrange|spoon|pipe)\b|\b(?:per|each)\s+(?:sandwich|serving|cracker|piece)\b/.test(clause)) continue;
       const clauseWords = new Set(words(clause));
       if (!tokens.every(token => clauseWords.has(token))) continue;
-      const matches = [...clause.matchAll(new RegExp(`(${amountPattern})\\s*(g|kg|ml|l|oz|lb|cups?|tsp|tbsp|grams?|kilograms?|milliliters?|liters?|ounces?|pounds?|teaspoons?|tablespoons?|pieces?)?\\s+([^;,]+)`, "gi"))];
+      const matches = [...clause.matchAll(new RegExp(`(${amountPattern})\\s*(colheres? de (?:sopa|cha)|c\\.? (?:de )?(?:sopa|cha)|g|kg|ml|l|oz|lb|cups?|tsp|tbsp|gramas|quilogramas|litros|mililitros|grams?|kilograms?|milliliters?|liters?|ounces?|pounds?|teaspoons?|tablespoons?|pieces?)?\\s+([^;,]+)`, "gi"))];
       for (const match of matches) {
         const trailing = new Set(words(match[3]!));
+        if (!match[2] && /^(?:molho|maco|punhado|bunch|handful|pinch|splash)\b/.test(match[3]!)) continue;
         if (tokens.every(token => trailing.has(token))) found.push({
           quantity: amount(match[1]!), unit: match[2] ? unitNames[match[2].toLowerCase()] ?? match[2].toLowerCase() : "piece", id: source.id
         });
@@ -152,7 +183,10 @@ export function validateExtraction(output: unknown, sourceURL: string, sources: 
     const support = cited(item.evidence_ids);
     const supportWords = new Set(support.flatMap(source => words(source.text)));
     invariant(words(item.name).every(word => supportWords.has(word)), 502, "extraction_ingredient", "An ingredient is not supported by its cited source.");
-    if (item.notes) invariant(words(item.notes).every(word => supportWords.has(word)), 502, "extraction_notes", "Ingredient preparation was not supported by its cited source.");
+    if (item.notes && !words(item.notes).every(word => supportWords.has(word))) {
+      warnings.push(`Preparation for ${item.name} needs confirmation against the source.`);
+      item.notes = null;
+    }
     const allAmounts = ingredientAmounts(item.name, sources);
     const alternatives = new Set(allAmounts.map(fact => `${fact.quantity} ${fact.unit}`));
     if (alternatives.size > 1) {
@@ -161,14 +195,24 @@ export function validateExtraction(output: unknown, sourceURL: string, sources: 
       item.quantity = null;
       item.unit = null;
     } else if (item.quantity !== null) {
-      invariant(allAmounts.some(fact => item.evidence_ids.includes(fact.id) && fact.quantity === item.quantity && fact.unit === item.unit),
-        502, "extraction_quantity", "An ingredient amount/unit is not explicitly supported by its cited source.");
+      if (!allAmounts.some(fact => item.evidence_ids.includes(fact.id) && fact.quantity === item.quantity && fact.unit === item.unit)) {
+        warnings.push(`Amount/unit for ${item.name} could not be confirmed from its citation; review the source before adding a quantity.`);
+        item.quantity = null;
+        item.unit = null;
+      }
     }
     return { name: item.name, quantity: item.quantity === null ? null : String(item.quantity), unit: item.unit, preparation: item.notes };
   });
   for (const step of value.steps) {
     const support = cited(step.evidence_ids).map(source => source.text).join("\n");
     const facts = numericFacts(support);
+    if (step.temperature_c !== null && !new RegExp(`${step.temperature_c}\\s*(?:°\\s*)?(?:c\\b|celsius)`, "i").test(support)) {
+      invariant(facts.includes(step.temperature_c), 502, "extraction_temperature", "The model invented a cooking temperature.");
+      const degrees = step.temperature_c;
+      step.temperature_c = null;
+      warnings.push("The source's cooking temperature scale is unspecified; confirm it before cooking.");
+      step.instruction = step.instruction.replace(new RegExp(`${degrees}\\s*(?:°\\s*)?(?:C\\b|Celsius)`, "gi"), `${degrees} graus`);
+    }
     invariant(numericFacts(step.instruction).every(fact => facts.includes(fact)), 502, "extraction_number", "An instruction contains an unsupported number.");
     for (const conflict of conflicts) {
       if (words(conflict.name).every(word => words(step.instruction).includes(word))) {
@@ -177,7 +221,7 @@ export function validateExtraction(output: unknown, sourceURL: string, sources: 
         502, "extraction_conflict", "An instruction selected an unresolved conflicting ingredient amount; it cannot be accepted as a recipe.");
       }
     }
-    const timings = [...support.matchAll(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*(minutes?|mins?|hours?|hrs?|seconds?|secs?)\b/gi)]
+    const timings = [...support.matchAll(/(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*(minutes?|mins?|minutos?|hours?|hrs?|horas?|seconds?|secs?|segundos?)\b/gi)]
       .map(match => {
         const scale = /^h/i.test(match[3]!) ? 60 : /^s/i.test(match[3]!) ? 1 / 60 : 1;
         return [Number(match[1]) * scale, Number(match[2] ?? match[1]) * scale];
@@ -185,13 +229,11 @@ export function validateExtraction(output: unknown, sourceURL: string, sources: 
     invariant((step.duration_minutes_min === null && step.duration_minutes_max === null) ||
       timings.some(([min, max]) => min === step.duration_minutes_min && max === step.duration_minutes_max),
     502, "extraction_time", "An instruction duration is unsupported or incomplete.");
-    if (step.duration_minutes_min !== null) invariant(/\b(?:min(?:ute)?s?|hours?|hrs?|seconds?|secs?)\b/i.test(step.instruction),
+    if (step.duration_minutes_min !== null) invariant(/\b(?:min(?:ute)?s?|minutos?|hours?|hrs?|horas?|seconds?|secs?|segundos?)\b/i.test(step.instruction),
       502, "extraction_time", "The readable instruction omitted its duration.");
-    if (step.temperature_c !== null) invariant(new RegExp(`${step.temperature_c}\\s*(?:°\\s*)?(?:c\\b|celsius)`, "i").test(support),
-      502, "extraction_temperature", "The model invented or converted a cooking temperature.");
     // Reject new food names and unsupported actions, not merely new numbers.
     const supportWords = new Set(words(support));
-    const glue = new Set(words("a an the and or to in into on with for until then it them of from at as is are your all each gently about remaining"));
+    const glue = new Set(words("a an the and or to in into on with for until then it them of from at as is are your all each gently about remaining o os as de do da dos das no na nos nas um uma e ou para com ate que bem muito pouco por em depois enquanto ao aos pelo pela sem cerca quando este esta isto"));
     invariant(words(step.instruction).every(word => supportWords.has(word) || glue.has(word) || /^\d/.test(word)),
       502, "extraction_instruction", "The instruction includes wording not grounded in its cited source; manual review is required.");
   }

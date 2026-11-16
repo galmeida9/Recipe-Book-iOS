@@ -60,17 +60,19 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
 
     func books() async throws -> [BookSummary] {
         let values = try await api.books()
-        bookCache = [:]
-        recipeCache = [:]
+        var nextBooks: [UUID: RecipeBookCore.Book] = [:]
+        var nextRecipes: [UUID: RecipeBookCore.Recipe] = [:]
         var result: [BookSummary] = []
         for value in values {
             try Task.checkCancellation()
-            bookCache[value.id] = value
+            nextBooks[value.id] = value
             let recipes = try await api.recipes(bookId: value.id)
             let members = try await api.members(bookId: value.id)
-            recipes.forEach { recipeCache[$0.id] = $0 }
+            recipes.forEach { nextRecipes[$0.id] = $0 }
             result.append(summary(value, recipes: recipes.count, members: members.count, coverImageID: recipes.compactMap(\.draft.coverImageID).first))
         }
+        bookCache = nextBooks
+        recipeCache = nextRecipes
         return result
     }
     func createBook(name: String, kind: RecipeBookPresentation.BookKind) async throws -> BookSummary {

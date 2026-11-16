@@ -144,6 +144,7 @@ private final class AppAuthDriver: GoogleSessionDriver {
     private struct Discovery: Decodable { let clientID: String; let callbackURL: String }
     init(configuration: GoogleAuthConfiguration) throws {
         self.configuration = configuration
+        SharedGoogleSession.configureNetworking()
         keychainService = (Bundle.main.bundleIdentifier ?? "RecipeBook") + ".web-oauth"
         var item: CFTypeRef?
         let status = SecItemCopyMatching([kSecClass: kSecClassGenericPassword, kSecAttrService: keychainService,

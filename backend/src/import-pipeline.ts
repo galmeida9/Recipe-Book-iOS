@@ -5,7 +5,7 @@ import { canonicalReelURL, invariant, requiredSetting, type Evidence } from "./c
 import { evidenceSchema } from "./import-evidence.js";
 import { extractionInput, extractionJSONSchema, extractionRules, relevantRecipeComments, validateExtraction } from "./recipe-extraction.js";
 import { approvedGemini, GeminiExtractor } from "./gemini.js";
-import { approvedAzureModel, AzureRecipeExtractor } from "./azure-extraction.js";
+import { approvedAzureModel, AzureRecipeExtractor, type AzureModelResult } from "./azure-extraction.js";
 
 export const pipelineSchema = z.object({
   stage: z.enum(["metadata", "audio", "model"]),
@@ -65,11 +65,11 @@ export class ImportPipelineProvider extends ApifyProvider {
     }
     return accessible;
   }
-  async extractDirect(sourceURL: string, pipeline: Pipeline) {
+  async extractDirect(sourceURL: string, pipeline: Pipeline, preserve?: (result: AzureModelResult) => Promise<void>) {
     const config = reviewedPipeline();
     invariant(config.modelProvider !== "apify", 503, "configuration", "A reviewed direct model is not selected.");
     invariant(pipeline.configuration === configuration() && pipeline.evidence, 503, "provider_changed", "The reviewed model configuration or cached evidence changed.");
-    return config.modelProvider === "azure-credits" ? new AzureRecipeExtractor().extract(sourceURL, pipeline.evidence)
+    return config.modelProvider === "azure-credits" ? new AzureRecipeExtractor().extract(sourceURL, pipeline.evidence, preserve)
       : new GeminiExtractor().extract(sourceURL, pipeline.evidence);
   }
   async startStage(sourceURL: string, pipeline: Pipeline, reservation: number): Promise<ProviderRun> {

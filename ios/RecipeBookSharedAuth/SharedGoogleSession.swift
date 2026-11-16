@@ -11,11 +11,23 @@ public final class SharedGoogleSession: AccessTokenProvider {
     private let group: String
     private let lockURL: URL
     private static let service = "RecipeBook.GoogleBroker.Shared.v1"
+    private static var networkConfigured = false
+
+    public static func configureNetworking() {
+        guard !networkConfigured else { return }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 20
+        configuration.waitsForConnectivity = false
+        OIDURLSessionProvider.setSession(URLSession(configuration: configuration))
+        networkConfigured = true
+    }
 
     public init(baseURL: URL, bundle: Bundle = .main) throws {
         guard baseURL.scheme == "https", baseURL.host != nil, baseURL.user == nil, baseURL.password == nil,
               baseURL.query == nil, baseURL.fragment == nil else { throw Self.failure("The shared API URL is invalid.") }
         self.baseURL = baseURL
+        Self.configureNetworking()
         group = try SharedAppGroup.current(bundle: bundle)
         guard let directory = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
             throw Self.failure("iOS did not authorize shared sign-in. Keep both signed targets and their matching App Group.")
@@ -82,6 +94,7 @@ public final class SharedGoogleSession: AccessTokenProvider {
         var query = key
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
+        query[kSecUseAuthenticationUI] = kSecUseAuthenticationUIFail
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
@@ -105,17 +118,10 @@ public final class SharedGoogleSession: AccessTokenProvider {
               state.isAuthorized else { throw Self.failure("The shared sign-in belongs to another backend or is no longer authorized.") }
     }
     private func coordinated<T>(_ operation: () throws -> T) throws -> T {
-        var coordinationError: NSError?
-        var result: Result<T, Error>?
-        NSFileCoordinator().coordinate(writingItemAt: lockURL, options: [], error: &coordinationError) { _ in
-            result = Result { try operation() }
-        }
-        if let coordinationError { throw coordinationError }
-        guard let result else { throw Self.failure("Shared sign-in coordination did not complete.") }
-        return try result.get()
+        try NonblockingFileLock.withExclusiveAccess(to: lockURL, operation)
     }
     private static func failure(_ message: String) -> APIError {
-        APIError(status: 401, code: "shared_sign_in", message: message)
+        APIError(status: 0, code: "shared_sign_in", message: message)
     }
 }
 #endif

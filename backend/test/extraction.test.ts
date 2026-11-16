@@ -85,11 +85,38 @@ test("unknown citations, changed source, unsupported ingredient/time/temperature
     (value: ReturnType<typeof recipe>) => { value.ingredients[0]!.evidence_ids = ["invented"]; },
     (value: ReturnType<typeof recipe>) => { value.source_url = "https://www.instagram.com/reel/other/"; },
     (value: ReturnType<typeof recipe>) => { value.ingredients[0]!.name = "sugar"; },
-    (value: ReturnType<typeof recipe>) => { value.ingredients[0]!.quantity = 600; },
     (value: ReturnType<typeof recipe>) => { value.steps[0]!.duration_minutes_min = 22; },
     (value: ReturnType<typeof recipe>) => { value.steps[0]!.temperature_c = 180; },
     (value: ReturnType<typeof recipe>) => { value.steps[0]!.instruction = "Add sugar and bake."; },
     (value: ReturnType<typeof recipe>) => { value.requires_review = false; }
   ];
   for (const change of changes) { const value = recipe(); change(value); assert.throws(() => validateExtraction(value, url, source)); }
+});
+test("unsupported model amounts become explicit unknown review fields instead of killing the whole editable recipe", () => {
+  const value = recipe();
+  value.ingredients[0]!.quantity = 600;
+  const result = validateExtraction(value, url, source);
+  assert.equal(result.draft.ingredients[0]!.quantity, null);
+  assert.equal(result.draft.ingredients[0]!.unit, null);
+  assert.match(result.warnings.join(" "), /could not be confirmed/);
+  assert.equal(result.draft.steps.length, 1);
+});
+test("Portuguese source units and durations normalize explicitly without inventing herb bunch quantities or temperature scale", () => {
+  const value = recipe();
+  value.ingredients = [
+    { name: "azeite", quantity: 4, unit: "tbsp", notes: null, evidence_ids: ["C0"] },
+    { name: "salsa", quantity: 1, unit: null, notes: null, evidence_ids: ["C1"] }
+  ];
+  value.steps = [{ instruction: "Asse as batatas no forno a 180 graus por 30 minutos.",
+    duration_minutes_min: 30, duration_minutes_max: 30, temperature_c: null, evidence_ids: ["T2"] }];
+  const result = validateExtraction(value, url, [
+    { id: "C0", kind: "caption", text: "- 4 c. sopa de azeite" },
+    { id: "C1", kind: "caption", text: "- 1 molho pequeno de salsa, picada" },
+    { id: "T2", kind: "transcript", text: "Vai ao forno pre-aquecido a 180 graus a assar por 30 minutos. As batatas ficam prontas." }
+  ]);
+  assert.equal(result.draft.ingredients[0]!.quantity, "4");
+  assert.equal(result.draft.ingredients[0]!.unit, "tbsp");
+  assert.equal(result.draft.ingredients[1]!.quantity, null);
+  assert.equal(result.draft.steps.length, 1);
+  assert.equal(result.extraction.steps[0]!.temperature_c, null);
 });

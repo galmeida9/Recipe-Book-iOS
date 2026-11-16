@@ -24,13 +24,15 @@ interface JobRow {
   providerRunId: string | null; dispatchStarted: boolean; dispatchStartedAt: Date | null; deadline: Date;
   pipelineData: string | null;
   destinationBookId: string | null; reviewSeenVersion: number;
+  operatorOnly: boolean; supersededById: string | null;
 }
 const columns = `CONVERT(varchar(36),Id) AS id,CONVERT(varchar(36),UserId) AS userId,SourceURL AS sourceURL,
  State AS state,Draft AS draft,Evidence AS evidence,Error AS error,Version AS version,CreatedAt AS createdAt,
  CONVERT(varchar(36),CompletedRecipeId) AS recipeId,CONVERT(varchar(36),CompletedBookId) AS bookId,
  BudgetMonth AS budgetMonth,ReservedMicros AS reservedMicros,ProviderRunId AS providerRunId,
  DispatchStarted AS dispatchStarted,DispatchStartedAt AS dispatchStartedAt,Deadline AS deadline,PipelineData AS pipelineData,
- CONVERT(varchar(36),DestinationBookId) AS destinationBookId,ReviewSeenVersion AS reviewSeenVersion`;
+ CONVERT(varchar(36),DestinationBookId) AS destinationBookId,ReviewSeenVersion AS reviewSeenVersion,
+ OperatorOnly AS operatorOnly,CONVERT(varchar(36),SupersededById) AS supersededById`;
 function job(row: JobRow): ImportJob {
   return {
     id: row.id.toLowerCase(), sourceURL: row.sourceURL, state: row.state, version: row.version,
@@ -111,6 +113,7 @@ export class ImportService {
       if (bookId) await bookAccess(transaction, bookId, userId);
       return (await query<JobRow>(transaction,
         `SELECT TOP(100) ${columns} FROM dbo.ImportJobs WHERE UserId=@userId AND State<>'discarded'
+        AND OperatorOnly=0 AND SupersededById IS NULL
         AND (@bookId IS NULL OR DestinationBookId=@bookId)
         AND (DestinationBookId IS NULL OR EXISTS(
           SELECT 1 FROM dbo.Books b JOIN dbo.Memberships m ON m.BookId=b.Id
@@ -121,7 +124,9 @@ export class ImportService {
   get(id: string) {
     return this.service.execute(async (transaction, userId) => {
       await expireUndelivered(transaction, userId);
-      return job(await getJob(transaction, id, userId));
+      const row = await getJob(transaction, id, userId);
+      invariant(!row.operatorOnly || this.admission === "operator-proof", 404, "import_not_found", "Import job not found.");
+      return job(row);
     });
   }
   async create(input: unknown, key: string, expectedAccountId?: string) {
@@ -139,6 +144,7 @@ export class ImportService {
       if (!requests[0]) return null;
       invariant(requests[0].sourceURL === sourceURL, 409, "idempotency_conflict", "This idempotency key belongs to a different Reel.");
       const current = await getJob(transaction, requests[0].jobId, userId);
+      invariant(!current.operatorOnly || this.admission === "operator-proof", 404, "import_not_found", "Import job not found.");
       invariant((current.destinationBookId?.toLowerCase() ?? null) === (destination ?? null), 409, "idempotency_conflict", "This import key belongs to a different destination book.");
       return job(current);
     });
@@ -152,14 +158,15 @@ export class ImportService {
       if (requests[0]) {
         invariant(requests[0].sourceURL === sourceURL, 409, "idempotency_conflict", "This idempotency key belongs to a different Reel.");
         const current = await getJob(transaction, requests[0].jobId, userId);
+        invariant(!current.operatorOnly || this.admission === "operator-proof", 404, "import_not_found", "Import job not found.");
         invariant((current.destinationBookId?.toLowerCase() ?? null) === (destination ?? null), 409, "idempotency_conflict", "This import key belongs to a different destination book.");
         return job(current);
       }
       const duplicate = await query<JobRow>(transaction,
         `SELECT TOP(1) ${columns} FROM dbo.ImportJobs WITH(UPDLOCK,HOLDLOCK)
-        WHERE UserId=@userId AND SourceURL=@sourceURL AND BudgetMonth=@month
+        WHERE UserId=@userId AND SourceURL=@sourceURL AND BudgetMonth=@month AND OperatorOnly=@operatorOnly
         AND (DestinationBookId=@destination OR (DestinationBookId IS NULL AND @destination IS NULL)) ORDER BY CreatedAt DESC`,
-        { userId, sourceURL, month: budget.month, destination: destination ?? null });
+        { userId, sourceURL, month: budget.month, destination: destination ?? null, operatorOnly: this.admission === "operator-proof" });
       if (duplicate[0]) {
         await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)",
           { userId, key, id: duplicate[0].id, sourceURL });
@@ -171,9 +178,10 @@ export class ImportService {
       await reserve(transaction, budget);
       const id = randomUUID();
       const deadline = new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime()));
-      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData,DestinationBookId)
-        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline,@destination)`,
-        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline, pipeline: JSON.stringify(initialPipeline()), destination: destination ?? null });
+      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData,DestinationBookId,OperatorOnly)
+        VALUES(@id,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline,@destination,@operatorOnly)`,
+        { id, userId, key, sourceURL, month: budget.month, reserve: budget.reserveMicros, deadline, pipeline: JSON.stringify(initialPipeline()),
+          destination: destination ?? null, operatorOnly: this.admission === "operator-proof" });
       await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@id,@sourceURL)", { userId, key, id, sourceURL });
       return job(await getJob(transaction, id, userId));
     });
@@ -202,6 +210,7 @@ export class ImportService {
   discard(id: string, version: number) {
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
+      invariant(!row.operatorOnly, 404, "import_not_found", "Import job not found.");
       assertVersion(row.version, version);
       invariant(!["queued", "running", "completed"].includes(row.state), 409, "import_busy", "Only review drafts or failed jobs can be discarded.");
       await query(transaction, "UPDATE dbo.ImportJobs SET State='discarded',Draft=NULL,Evidence=NULL,Version=Version+1 WHERE Id=@id", { id });
@@ -211,6 +220,7 @@ export class ImportService {
   markSeen(id: string, version: number) {
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
+      invariant(!row.operatorOnly, 404, "import_not_found", "Import job not found.");
       assertVersion(row.version, version);
       invariant(row.state === "review", 409, "review_required", "Only a ready review draft can be marked as seen.");
       await query(transaction, "UPDATE dbo.ImportJobs SET ReviewSeenVersion=Version WHERE Id=@id", { id });
@@ -222,15 +232,21 @@ export class ImportService {
       approvedPipeline().modelProvider !== "apify", 403, "resume_not_approved", "Cached model recovery requires an explicitly authorized direct-model proof.");
     const cached = await this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
-      invariant(row.state === "failed" && row.pipelineData && row.providerRunId &&
+      invariant(row.state === "failed" && row.pipelineData &&
         row.createdAt.getTime() > Date.now() - 24 * 60 * 60_000, 409, "resume_unsafe", "This failed import does not have recent, definite model-stage evidence.");
       const pipeline = pipelineSchema.parse(JSON.parse(row.pipelineData));
       invariant(pipeline.stage === "model" && pipeline.evidence?.transcript && pipeline.runs.length === 2,
         409, "resume_unsafe", "Both completed metadata and audio stages are required; they will not be charged again.");
       return { row, pipeline };
     });
-    const previous = await this.provider.run(cached.row.providerRunId!);
-    invariant(previous.status === "SUCCEEDED", 409, "resume_unsafe", "The prior provider outcome is not definitively terminal.");
+    if (cached.row.providerRunId) {
+      const previous = await this.provider.run(cached.row.providerRunId);
+      invariant(previous.status === "SUCCEEDED", 409, "resume_unsafe", "The prior provider outcome is not definitively terminal.");
+    } else {
+      invariant(cached.row.dispatchStarted &&
+        cached.row.error === "An ingredient amount/unit is not explicitly supported by its cited source.",
+      409, "resume_unsafe", "Only the explicitly verified completed quantity-validation failure can be recovered; unknown model POST outcomes are not retried.");
+    }
     const budget = await this.provider.budget();
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
@@ -247,13 +263,14 @@ export class ImportService {
       const newId = randomUUID();
       const pipeline = { ...initialPipeline(), stage: "model" as const, evidence: cached.pipeline.evidence,
         thumbnailURL: cached.pipeline.thumbnailURL, runs: cached.pipeline.runs, resumedFrom: row.id.toLowerCase() };
-      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData,DestinationBookId)
-        VALUES(@newId,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline,@destination)`,
+      await query(transaction, `INSERT dbo.ImportJobs(Id,UserId,IdempotencyKey,SourceURL,State,BudgetMonth,ReservedMicros,Deadline,PipelineData,DestinationBookId,OperatorOnly)
+        VALUES(@newId,@userId,@key,@sourceURL,'queued',@month,@reserve,@deadline,@pipeline,@destination,@operatorOnly)`,
       { newId, userId, key, sourceURL: row.sourceURL, month: budget.month, reserve: budget.reserveMicros,
         deadline: new Date(Math.min(Date.now() + 10 * 60_000, budget.endsAt.getTime())),
-        pipeline: JSON.stringify(pipeline), destination: row.destinationBookId });
+        pipeline: JSON.stringify(pipeline), destination: row.destinationBookId, operatorOnly: row.operatorOnly });
       await query(transaction, "INSERT dbo.ImportRequests(UserId,IdempotencyKey,JobId,SourceURL) VALUES(@userId,@key,@newId,@sourceURL)",
         { userId, key, newId, sourceURL: row.sourceURL });
+      await query(transaction, "UPDATE dbo.ImportJobs SET SupersededById=@newId WHERE Id=@id", { id, newId });
       return job(await getJob(transaction, newId, userId));
     });
   }
@@ -261,6 +278,7 @@ export class ImportService {
     const draft = draftSchema.parse(input);
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
+      invariant(!row.operatorOnly, 404, "import_not_found", "Import job not found.");
       assertVersion(row.version, version);
       invariant(row.state === "review", 409, "review_required", "This job is not ready for review.");
       invariant(!row.destinationBookId || row.destinationBookId.toLowerCase() === bookId.toLowerCase(),
@@ -360,7 +378,13 @@ export async function processImport(id: string, provider = new ImportPipelinePro
   if (action.kind === "extract") {
     try {
       const pipeline = pipelineSchema.parse(JSON.parse(action.row.pipelineData!));
-      const result = await provider.extractDirect(action.row.sourceURL, pipeline);
+      const result = await provider.extractDirect(action.row.sourceURL, pipeline, async model => {
+        await serializable(async transaction => {
+          await query(transaction, `UPDATE dbo.ImportJobs SET ModelResultJson=@model
+            WHERE Id=@id AND State='running' AND Deadline=@deadline`,
+          { id: action.row.id, model: JSON.stringify(model), deadline: action.row.deadline });
+        });
+      });
       await finishReviewedImport(action.row, result.review.draft, result.evidence, pipeline.thumbnailURL, action.principal);
     } catch (error) {
       await finishImport(action.row, null, null, error instanceof AppError ? error.message :
