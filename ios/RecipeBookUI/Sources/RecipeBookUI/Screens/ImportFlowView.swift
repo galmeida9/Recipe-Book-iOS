@@ -177,7 +177,7 @@ struct ReelImportFlowView: View {
                         .buttonStyle(.borderedProminent)
                 }
             } else {
-                ProgressView("Loading…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                SlowLoadingView()
             }
         }
         .navigationTitle("Import")
@@ -212,9 +212,7 @@ struct ReelImportFlowView: View {
                             .disabled(runner.isRunning)
                     }
                 } else if job.status.isInFlight {
-                    Text(job.bookID == nil
-                         ? "You can close this. The import keeps going and stays in your Library under “Imports in progress”."
-                         : "You can close this, or the app. The import keeps going and waits inside its book for your review.")
+                    Text("You can close this, or the app. The import keeps going and waits inside its book for your review.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -393,52 +391,6 @@ struct ImportStatusCard: View {
         case .failed: return .red
         case .completed: return RecipeBookTheme.success
         default: return RecipeBookTheme.accent
-        }
-    }
-}
-
-@MainActor
-struct ImportJobRow: View {
-    let job: ImportJob
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(RecipeBookTheme.accent.opacity(0.12))
-                if job.status.isInFlight {
-                    ProgressView()
-                } else {
-                    Image(systemName: job.status.systemImage).foregroundStyle(color)
-                }
-            }
-            .frame(width: 44, height: 44)
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(job.titleHint ?? "Instagram Reel")
-                    .font(.body.weight(.medium))
-                    .lineLimit(2)
-                HStack(spacing: 6) {
-                    Text(job.status.title).foregroundStyle(color)
-                    Text("·")
-                    Text(job.createdAt, style: .relative)
-                }
-                .font(.caption)
-                if case .failed(let reason, _) = job.status {
-                    Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private var color: Color {
-        switch job.status {
-        case .reviewRequired: return RecipeBookTheme.accent
-        case .failed: return .red
-        case .completed: return RecipeBookTheme.success
-        case .queued, .processing: return .secondary
         }
     }
 }

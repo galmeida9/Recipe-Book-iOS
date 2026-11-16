@@ -244,6 +244,7 @@ struct MainTabView: View {
     let onChange: (SessionState) -> Void
     @State private var tab: AppTab = .library
     @State private var signInFeature: SignInFeature?
+    @State private var importsChanged = 0
 
     var body: some View {
         tabs
@@ -260,7 +261,8 @@ struct MainTabView: View {
                         GuestReelSheet(onChange: onChange) { incomingReel = nil }
                     } else {
                         // Same destination picker as the Share Extension: choose a book, queue, close.
-                        ReelImportFlowView(start: .link(url), onClose: { incomingReel = nil })
+                        ReelImportFlowView(start: .link(url), onSubmitted: { _ in importsChanged += 1 },
+                                           onClose: { incomingReel = nil })
                     }
                 }
             }
@@ -279,14 +281,14 @@ struct MainTabView: View {
     private var tabs: some View {
         if #available(iOS 18, *) {
             TabView(selection: $tab) {
-                Tab("Library", systemImage: "books.vertical", value: AppTab.library) { LibraryView() }
+                Tab("Library", systemImage: "books.vertical", value: AppTab.library) { LibraryView(importsChanged: importsChanged) }
                 Tab("Plan", systemImage: "calendar", value: AppTab.plan) { PlanView() }
                 Tab("Shopping", systemImage: "cart", value: AppTab.shopping) { ShoppingListsView() }
                 Tab("Account", systemImage: "person.crop.circle", value: AppTab.account) { accountTab }
             }
         } else {
             TabView(selection: $tab) {
-                LibraryView()
+                LibraryView(importsChanged: importsChanged)
                     .tabItem { Label("Library", systemImage: "books.vertical") }
                     .tag(AppTab.library)
                 PlanView()

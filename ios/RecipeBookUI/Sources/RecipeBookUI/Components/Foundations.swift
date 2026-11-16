@@ -127,8 +127,7 @@ struct LoadingContent<Value, Content: View>: View {
     var body: some View {
         switch state {
         case .loading:
-            ProgressView("Loading…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            SlowLoadingView(retry: retry)
         case .failed(let message):
             ContentUnavailableView {
                 Label("Couldn’t load", systemImage: "exclamationmark.icloud")
@@ -140,6 +139,39 @@ struct LoadingContent<Value, Content: View>: View {
             }
         case .loaded(let value):
             content(value)
+        }
+    }
+}
+
+/// A spinner that, after a while, says so and offers Try Again instead of spinning silently forever.
+/// `retry == nil` shows only the message (the screen has its own Close/Cancel).
+struct SlowLoadingView: View {
+    var retry: (() -> Void)?
+    @State private var isSlow = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView(isSlow ? "Still loading…" : "Loading…")
+            if isSlow {
+                Text("This is taking longer than usual. Check your connection.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                if let retry {
+                    Button("Try Again") {
+                        isSlow = false
+                        retry()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: isSlow) {
+            guard !isSlow else { return }
+            try? await Task.sleep(for: .seconds(15))
+            if !Task.isCancelled { isSlow = true }
         }
     }
 }

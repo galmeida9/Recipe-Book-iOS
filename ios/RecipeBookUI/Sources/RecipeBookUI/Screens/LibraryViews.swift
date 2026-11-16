@@ -4,21 +4,23 @@ import RecipeBookPresentation
 
 @MainActor
 struct LibraryView: View {
+    /// Bumped by the app shell when an import was just queued, so its book badge shows immediately.
+    var importsChanged = 0
     @Environment(\.recipeBookService) private var service
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessMode) private var accessMode
     @Environment(\.requestSignIn) private var requestSignIn
+    @Environment(\.scenePhase) private var scenePhase
     @State private var state: LoadState<[BookSummary]> = .loading
     @State private var reload = 0
     @State private var showingCreate = false
     @State private var pendingSignIn = false
     @State private var jobs: [ImportJob] = []
-    @State private var resumingImport: ImportJob?
 
     var body: some View {
         NavigationStack {
             LoadingContent(state: state, retry: { reload += 1 }) { books in
-                if books.isEmpty && unfinishedImports.isEmpty {
+                if books.isEmpty {
                     VStack(spacing: 0) {
                         if accessMode == .guest { OnDeviceBanner().padding() }
                         ContentUnavailableView {
@@ -36,7 +38,6 @@ struct LibraryView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
                             if accessMode == .guest { OnDeviceBanner() }
-                            importsInProgress
                             let account = books.filter { $0.storage == .account }
                             let onDevice = books.filter { $0.storage == .onDevice }
                             shelf("Shared", account.filter { $0.kind == .shared })
@@ -60,6 +61,11 @@ struct LibraryView: View {
                     await loadJobs()
                 }
             }
+            .onChange(of: importsChanged) { reload += 1 }
+            .onChange(of: scenePhase) { _, phase in
+                // Imports finish while the app is closed; refresh badges when it comes back.
+                if phase == .active { reload += 1 }
+            }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Library")
             .toolbar {
@@ -74,52 +80,10 @@ struct LibraryView: View {
             }) {
                 CreateBookSheet(onCreated: { _ in reload += 1 }, onSignInNeeded: { pendingSignIn = true })
             }
-            .sheet(item: $resumingImport, onDismiss: { reload += 1 }) { job in
-                ReelImportFlowView(start: .job(job.id), onClose: { resumingImport = nil })
-            }
         }
     }
 
     private var activity: [BookID: BookImportActivity] { BookImportActivity.byBook(jobs) }
-
-    /// Older imports that aren't bound to a book. Book-bound imports appear inside their book.
-    private var unfinishedImports: [ImportJob] {
-        jobs.filter { job in
-            guard job.bookID == nil else { return false }
-            if case .completed = job.status { return false }
-            return true
-        }
-    }
-
-    /// Unfinished Instagram imports (account only). The job lives on the server, so the user can
-    /// leave the import sheet at any time and pick it up here.
-    @ViewBuilder
-    private var importsInProgress: some View {
-        if !unfinishedImports.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Imports in progress")
-                    .font(.title3.weight(.semibold))
-                    .accessibilityAddTraits(.isHeader)
-                VStack(spacing: 0) {
-                    ForEach(unfinishedImports) { job in
-                        Button { resumingImport = job } label: {
-                            ImportJobRow(job: job)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityHint("Opens this import")
-                        if job.id != unfinishedImports.last?.id {
-                            Divider().padding(.leading, 66)
-                        }
-                    }
-                }
-                .background(Color(.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            }
-        }
-    }
 
     @ViewBuilder
     private func shelf(_ title: String, _ books: [BookSummary], footer: String? = nil) -> some View {
@@ -151,15 +115,16 @@ struct LibraryView: View {
         do {
             state = .loaded(try await service.books())
         } catch let error where !error.isCancellation {
-            state = .failed(error.localizedDescription)
+            // A failed refresh keeps the books already on screen.
+            if state.value == nil { state = .failed(error.localizedDescription) }
         } catch {}
         await loadJobs()
     }
 
     private func loadJobs() async {
         guard accessMode == .account else { jobs = []; return }
-        // Secondary content: a failure here shouldn't block the library.
-        if let latest = try? await service.importJobs() { jobs = latest }
+        // Secondary content: a failure here shouldn't block the library. Only real changes re-render.
+        if let latest = try? await service.importJobs(), latest != jobs { jobs = latest }
     }
 }
 
@@ -367,6 +332,7 @@ struct BookView: View {
     @State private var runner = ActionRunner()
     @Environment(\.accessMode) private var accessMode
     @Environment(\.requestSignIn) private var requestSignIn
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         LoadingContent(state: state, retry: { reload += 1 }) { book in
@@ -381,6 +347,9 @@ struct BookView: View {
                 guard !Task.isCancelled else { return }
                 await loadImports()
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { reload += 1 }
         }
         .errorAlert($runner.errorMessage)
     }
@@ -509,6 +478,12 @@ struct BookView: View {
             // Imports land in account books; a book on this iPhone isn't preselected.
             ReelImportFlowView(start: .paste,
                                preselectedBookID: book.summary.storage == .account ? book.id : nil,
+                               onSubmitted: { job in
+                                   if job.bookID == book.id {
+                                       imports = BookImportActivity.pendingCards(
+                                           for: book.id, in: BookImportActivity.upserting(job, into: imports))
+                                   }
+                               },
                                onClose: { showingImport = false })
         }
         .sheet(item: $openingImport, onDismiss: { reload += 1 }) { job in
@@ -604,13 +579,10 @@ struct BookView: View {
 
     private func loadImports() async {
         guard accessMode == .account, summary.storage == .account else { imports = []; return }
-        // Secondary content: a failure here shouldn't block the book.
+        // Secondary content: a failure here shouldn't block the book. Only real changes re-render.
         guard let jobs = try? await service.importJobs() else { return }
-        imports = jobs.filter { job in
-            guard job.bookID == summary.id else { return false }
-            if case .completed = job.status { return false }
-            return true
-        }
+        let cards = BookImportActivity.pendingCards(for: summary.id, in: jobs)
+        if cards != imports { imports = cards }
     }
 }
 

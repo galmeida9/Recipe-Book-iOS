@@ -339,4 +339,38 @@ final class PresentationRulesTests: XCTestCase {
         XCTAssertFalse(ImportJob(id: "j", sourceURL: URL(string: "https://www.instagram.com/reel/A/")!,
                                  status: .reviewRequired, createdAt: Date()).isUnseen)
     }
+
+    func testPendingCardsShowOnlyThisBooksUnfinishedJobs() {
+        let url = URL(string: "https://www.instagram.com/reel/A/")!
+        let old = ImportJob(id: "old", sourceURL: url, status: .reviewRequired,
+                            createdAt: Date(timeIntervalSince1970: 0), isUnseen: true)
+        let mine = ImportJob(id: "mine", sourceURL: url, status: .processing,
+                             createdAt: Date(timeIntervalSince1970: 20), bookID: "a")
+        let earlier = ImportJob(id: "earlier", sourceURL: url, status: .failed(reason: "x", canRetry: true),
+                                createdAt: Date(timeIntervalSince1970: 10), bookID: "a")
+        let done = ImportJob(id: "done", sourceURL: url, status: .completed(recipeID: "r", bookID: "a"),
+                             createdAt: Date(), bookID: "a")
+        let other = ImportJob(id: "other", sourceURL: url, status: .queued, createdAt: Date(), bookID: "b")
+        let jobs = [old, mine, earlier, done, other]
+
+        XCTAssertEqual(BookImportActivity.pendingCards(for: "a", in: jobs).map(\.id), ["earlier", "mine"])
+        XCTAssertEqual(BookImportActivity.pendingCards(for: "b", in: jobs).map(\.id), ["other"])
+        // An unbound job (e.g. an old test import) shows in no book and badges none.
+        XCTAssertFalse(BookImportActivity.byBook(jobs).values.contains { $0.newReady > 0 })
+    }
+
+    func testAcknowledgedJobShowsInItsBookBeforeTheNextRefresh() {
+        let url = URL(string: "https://www.instagram.com/reel/A/")!
+        let queued = ImportJob(id: "new", sourceURL: url, status: .queued, createdAt: Date(), bookID: "a")
+        let shown = BookImportActivity.upserting(queued, into: [])
+        XCTAssertEqual(BookImportActivity.pendingCards(for: "a", in: shown).map(\.id), ["new"])
+        XCTAssertEqual(BookImportActivity.byBook(shown)["a"]?.inProgress, 1)
+
+        var processing = queued
+        processing.status = .processing
+        processing.stageDetail = "Transcribing audio"
+        let updated = BookImportActivity.upserting(processing, into: shown)
+        XCTAssertEqual(updated.count, 1, "Same job id replaces, never duplicates")
+        XCTAssertEqual(updated.first?.stageDetail, "Transcribing audio")
+    }
 }

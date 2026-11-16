@@ -502,6 +502,29 @@ public struct BookImportActivity: Equatable, Sendable {
         if failed > 0 { parts.append(failed == 1 ? "1 import failed" : "\(failed) imports failed") }
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
+
+    /// The import cards shown inside one book: its unfinished jobs, oldest first. Jobs without a
+    /// destination never appear anywhere (there is no app-wide imports list).
+    public static func pendingCards(for bookID: BookID, in jobs: [ImportJob]) -> [ImportJob] {
+        jobs.filter { job in
+            guard job.bookID == bookID else { return false }
+            if case .completed = job.status { return false }
+            return true
+        }
+        .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Adds or replaces `job` (by id) so a job the server just acknowledged shows immediately,
+    /// before the next refresh lists it.
+    public static func upserting(_ job: ImportJob, into jobs: [ImportJob]) -> [ImportJob] {
+        var result = jobs
+        if let index = result.firstIndex(where: { $0.id == job.id }) {
+            result[index] = job
+        } else {
+            result.append(job)
+        }
+        return result
+    }
 }
 
 // MARK: - Shopping (personal lists only)
