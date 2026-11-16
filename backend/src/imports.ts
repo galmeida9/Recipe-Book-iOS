@@ -203,7 +203,7 @@ export class ImportService {
   }
   async resumeCachedModel(id: string, key: string) {
     invariant(this.admission === "operator-proof" && process.env["IMPORT_RUNTIME_PROBE_ENABLED"] === "true" &&
-      approvedPipeline().modelProvider === "gemini-free", 403, "resume_not_approved", "Cached model recovery requires an explicitly authorized free-model proof.");
+      approvedPipeline().modelProvider !== "apify", 403, "resume_not_approved", "Cached model recovery requires an explicitly authorized direct-model proof.");
     const cached = await this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);
       invariant(row.state === "failed" && row.pipelineData && row.providerRunId &&
@@ -323,7 +323,7 @@ export async function processImport(id: string, provider = new ImportPipelinePro
     await query(transaction, `UPDATE dbo.ImportJobs SET DispatchStarted=1,DispatchStartedAt=SYSUTCDATETIME(),
       State='running',Version=Version+1 WHERE Id=@id`, { id });
     const pipeline = pipelineSchema.parse(JSON.parse(row.pipelineData));
-    return pipeline.stage === "model" && config.modelProvider === "gemini-free"
+    return pipeline.stage === "model" && config.modelProvider !== "apify"
       ? { kind: "extract" as const, row, principal: identities[0]! }
       : { kind: "start" as const, row };
   });
@@ -348,7 +348,7 @@ export async function processImport(id: string, provider = new ImportPipelinePro
       await finishReviewedImport(action.row, result.review.draft, result.evidence, pipeline.thumbnailURL, action.principal);
     } catch (error) {
       await finishImport(action.row, null, null, error instanceof AppError ? error.message :
-        "The free model result could not be validated. No automatic retry was made.");
+        "The direct model result could not be validated. No automatic retry was made.");
       throw error;
     }
     return;

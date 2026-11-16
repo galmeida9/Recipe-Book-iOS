@@ -11,6 +11,7 @@ import { type ProviderBudget, type ProviderRun } from "../src/apify.js";
 import { ImportPipelineProvider, type Pipeline } from "../src/import-pipeline.js";
 import { validateExtraction } from "../src/recipe-extraction.js";
 import { readRecipeImage } from "../src/images.js";
+import { GeminiExtractor } from "../src/gemini.js";
 
 const enabled = process.env["RUN_SQL_INTEGRATION"] === "true";
 async function verifyOAuthCodeBindings() {
@@ -109,10 +110,12 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   const retryBudgetMonth = "r" + randomUUID().slice(0, 6);
   const ambiguousBudgetMonth = "a" + randomUUID().slice(0, 6);
   const revokedBudgetMonth = "v" + randomUUID().slice(0, 6);
+  const recoveryBudgetMonth = "m" + randomUUID().slice(0, 6);
   let activeBudgetMonth = budgetMonth;
   let starts = 0;
   let succeeded = false;
   let lostResponse = false;
+  let modelFails = false;
   class FixtureProvider extends ImportPipelineProvider {
     override async budget(): Promise<ProviderBudget> {
       return { month: activeBudgetMonth, spentMicros: 0, capMicros: 250_000, reserveMicros: 100_000, endsAt: new Date(Date.now() + 3_600_000) };
@@ -127,6 +130,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       return { id, status: succeeded ? "SUCCEEDED" : "RUNNING", defaultDatasetId: "fixture-dataset", options: { maxTotalChargeUsd: 0.04, isMaxTotalChargeUsdSetByUser: true } };
     }
     override async completeStage(_run: ProviderRun, sourceURL: string, pipeline: Pipeline) {
+      if (modelFails && pipeline.stage === "model") throw new AppError(502, "provider_model_unavailable", "Synthetic definitive model gateway denial");
       const evidence = { caption: "100 g carrots; Simmer carrots.", comments: [], transcript: "Simmer carrots." };
       const next = pipeline.stage === "metadata" ? { ...pipeline, stage: "audio" as const, evidence }
         : pipeline.stage === "audio" ? { ...pipeline, stage: "model" as const, evidence } : null;
@@ -184,6 +188,48 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     sharedId = shared.id;
     await assert.rejects(() => bob.recipes(privateBook.id), (error: unknown) => error instanceof AppError && error.code === "book_not_found");
     shared = await alice.addMember(shared.id, bobId, shared.version);
+    async function verifyCachedModelRecovery() {
+    activeBudgetMonth = recoveryBudgetMonth;
+    const modelSource = await createImport("https://www.instagram.com/reel/CachedModelRecovery/");
+    for (let stage = 0; stage < 5; stage++) await processImport(modelSource.id, provider);
+    modelFails = true;
+    await assert.rejects(() => processImport(modelSource.id, provider), /definitive model gateway denial/);
+    modelFails = false;
+    const originalFailure = await imports.get(modelSource.id);
+    assert.equal(originalFailure.state, "failed");
+    const beforeRecoveryStarts = starts;
+    Object.assign(process.env, {
+      IMPORT_RUNTIME_PROBE_ENABLED: "true", MODEL_PROVIDER: "gemini-free",
+      GEMINI_FREE_TIER_VERIFIED: "true", GEMINI_NO_BILLING_VERIFIED: "true", GEMINI_PUBLIC_EVIDENCE_ACKNOWLEDGED: "true",
+      GEMINI_API_KEY: "synthetic-only"
+    });
+    class DirectFixture extends FixtureProvider {
+      override async budget() { return { ...await super.budget(), reserveMicros: 70_000 }; }
+      override async extractDirect(sourceURL: string, pipeline: Pipeline) {
+        assert(pipeline.evidence?.transcript, "The resumed model receives the actual persisted transcript.");
+        return new GeminiExtractor(async () => Response.json({
+          modelVersion: "gemini-2.5-flash-lite", candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify({
+            title: "Carrots", source_url: sourceURL, servings: null, total_minutes: null, requires_review: true, warnings: [],
+            ingredients: [{ name: "carrots", quantity: 100, unit: "g", notes: null, evidence_ids: ["C0"] }],
+            steps: [{ instruction: "Simmer carrots.", duration_minutes_min: null, duration_minutes_max: null, temperature_c: null, evidence_ids: ["C0"] }]
+          }) }] } }]
+        })).extract(sourceURL, pipeline.evidence!);
+      }
+    }
+    const direct = new DirectFixture();
+    const recovery = new ImportService(alice, direct, "operator-proof");
+    const recoveryKey = randomUUID();
+    const resumed = await recovery.resumeCachedModel(modelSource.id, recoveryKey);
+    assert.notEqual(resumed.id, modelSource.id, "Recovery is a separate immutable journal, not a rewrite of the failed charge history.");
+    await processImport(resumed.id, direct);
+    const recovered = await recovery.get(resumed.id);
+    assert.equal(recovered.state, "review");
+    assert.equal(recovered.destinationBookId, shared.id);
+    assert.equal(recovered.draft!.sourceURL, originalFailure.sourceURL);
+    assert.equal((await recovery.resumeCachedModel(modelSource.id, recoveryKey)).id, resumed.id);
+    assert.equal((await recovery.get(modelSource.id)).state, "failed");
+    assert.equal(starts, beforeRecoveryStarts, "Model-only recovery never starts another metadata/audio/relay run.");
+    }
     const recipe = await alice.saveRecipe(shared.id, { title: "Soup", ingredients: [], steps: [] });
     await assert.rejects(() => outsider.recipes(shared.id), (error: unknown) => error instanceof AppError && error.code === "book_not_found");
     await assert.rejects(() => bob.saveRecipe(shared.id, recipe.draft, recipe.id, recipe.version),
@@ -334,6 +380,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       "SELECT State AS state FROM dbo.ImportJobs WHERE Id=@id", { id: revokedJob.id }));
     assert.equal(revokedState[0]!.state, "failed");
     shared = await alice.addMember(shared.id, bobId, shared.version);
+    await verifyCachedModelRecovery();
     const promoted = await alice.changeMember(shared.id, bobId, "owner", shared.version);
     assert.ok("version" in promoted);
     shared = (await alice.books()).find(book => book.id === shared.id)!;
@@ -367,6 +414,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: ambiguousBudgetMonth });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: revokedBudgetMonth });
+      await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: recoveryBudgetMonth });
       await query(transaction, "DELETE dbo.Accounts WHERE Issuer=@issuer", { issuer });
       await query(transaction, "DELETE dbo.AccessInvites WHERE Issuer=@issuer", { issuer });
     });

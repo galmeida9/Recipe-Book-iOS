@@ -5,6 +5,7 @@ import { canonicalReelURL, invariant, requiredSetting, type Evidence } from "./c
 import { evidenceSchema } from "./import-evidence.js";
 import { extractionInput, extractionJSONSchema, extractionRules, validateExtraction } from "./recipe-extraction.js";
 import { approvedGemini, GeminiExtractor } from "./gemini.js";
+import { approvedAzureModel, AzureRecipeExtractor } from "./azure-extraction.js";
 
 export const pipelineSchema = z.object({
   stage: z.enum(["metadata", "audio", "model"]),
@@ -27,11 +28,15 @@ export function reviewedPipeline() {
     "APIFY_PIPELINE_REVIEW_ACKNOWLEDGED", "APIFY_PIPELINE_PRICING_VERIFIED"].every(name => process.env[name] === "true"),
   503, "provider_not_approved", "Instagram imports are disabled until account limits and pricing are verified and the operator acknowledges the provider/data review.");
   const modelProvider = process.env["MODEL_PROVIDER"] ?? "apify";
-  invariant(["apify", "gemini-free"].includes(modelProvider), 503, "configuration", "Select an explicitly reviewed model provider.");
+  invariant(["apify", "gemini-free", "azure-credits"].includes(modelProvider), 503, "configuration", "Select an explicitly reviewed model provider.");
   if (modelProvider === "gemini-free") approvedGemini();
   const stages = Object.fromEntries(Object.keys(stageActors).map(key => {
     const stage = key as keyof typeof stageActors;
     if (stage === "model" && modelProvider === "gemini-free") return [stage, { actor: "gemini-free", build: "gemini-2.5-flash-lite", cap: 0 }];
+    if (stage === "model" && modelProvider === "azure-credits") {
+      const model = approvedAzureModel();
+      return [stage, { actor: "azure-credits", build: `${model.model}-${model.version}`, cap: model.cap }];
+    }
     const build = requiredSetting(`APIFY_${stage.toUpperCase()}_BUILD`);
     const cap = Number(requiredSetting(`APIFY_${stage.toUpperCase()}_CAP_MICROS`));
     invariant(/^\d+\.\d+\.\d+$/.test(build) && Number.isSafeInteger(cap) && cap > 0 && cap <= 1_000_000,
@@ -53,7 +58,7 @@ export class ImportPipelineProvider extends ApifyProvider {
     const config = reviewedPipeline();
     const accessible: string[] = [];
     for (const stage of Object.values(config.stages)) {
-      if (stage.actor === "gemini-free") continue;
+      if (["gemini-free", "azure-credits"].includes(stage.actor)) continue;
       z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })).max(1) }) })
         .parse(await this.request(`actors/${stage.actor}/runs?limit=1&desc=true`));
       accessible.push(stage.actor);
@@ -61,9 +66,11 @@ export class ImportPipelineProvider extends ApifyProvider {
     return accessible;
   }
   async extractDirect(sourceURL: string, pipeline: Pipeline) {
-    invariant(reviewedPipeline().modelProvider === "gemini-free", 503, "configuration", "A reviewed direct free model is not selected.");
+    const config = reviewedPipeline();
+    invariant(config.modelProvider !== "apify", 503, "configuration", "A reviewed direct model is not selected.");
     invariant(pipeline.configuration === configuration() && pipeline.evidence, 503, "provider_changed", "The reviewed model configuration or cached evidence changed.");
-    return new GeminiExtractor().extract(sourceURL, pipeline.evidence);
+    return config.modelProvider === "azure-credits" ? new AzureRecipeExtractor().extract(sourceURL, pipeline.evidence)
+      : new GeminiExtractor().extract(sourceURL, pipeline.evidence);
   }
   async startStage(sourceURL: string, pipeline: Pipeline, reservation: number): Promise<ProviderRun> {
     const config = approvedPipeline();

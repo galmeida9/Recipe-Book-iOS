@@ -7,6 +7,7 @@ import { ImportService, importDelivery } from "./imports.js";
 import { RecipeBookService } from "./service.js";
 import { enqueueImport } from "./queue.js";
 import { GeminiExtractor } from "./gemini.js";
+import { AzureRecipeExtractor } from "./azure-extraction.js";
 
 export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResponseInit> {
   const headers = { "Cache-Control": "no-store", "Content-Type": "application/json" };
@@ -22,7 +23,8 @@ export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResp
       invariant(budget.spentMicros + budget.reserveMicros <= budget.capMicros,
         429, "budget_exhausted", "The shared allowance cannot cover this bounded proof.");
       const actors = await provider.preflightAccess();
-      const model = config.modelProvider === "gemini-free" ? await new GeminiExtractor().preflight() : { model: "apify-relay", reachable: false };
+      const model = config.modelProvider === "gemini-free" ? await new GeminiExtractor().preflight()
+        : config.modelProvider === "azure-credits" ? await new AzureRecipeExtractor().preflight() : { model: "apify-relay", reachable: false };
       return { status: 200, jsonBody: {
         ready: true, importsEnabled: process.env["APIFY_ENABLED"] === "true", reserveMicros: budget.reserveMicros,
         observedSpentMicros: budget.spentMicros, cycle: budget.month, endsAt: budget.endsAt.toISOString(),

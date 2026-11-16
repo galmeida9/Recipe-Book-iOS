@@ -34,6 +34,31 @@ test("unseen fractions preserve explicit units rather than converting density", 
   assert.equal(result.draft.ingredients[0]!.quantity, "0.75");
   assert.equal(result.draft.ingredients[0]!.unit, "cup");
 });
+test("Unicode fractions and accented ingredient names remain grounded; assembly counts are not batch conflicts", () => {
+  const value = recipe();
+  value.ingredients = [
+    { name: "pumpkin puree", quantity: 0.25, unit: "cup", notes: null, evidence_ids: ["C0"] },
+    { name: "crackers", quantity: 24, unit: "piece", notes: null, evidence_ids: ["C1"] }
+  ];
+  value.steps = [{ instruction: "Arrange 12 crackers.", duration_minutes_min: null, duration_minutes_max: null, temperature_c: null, evidence_ids: ["C2"] }];
+  const result = validateExtraction(value, url, [
+    { id: "C0", kind: "caption", text: "\u00bc cup pumpkin pur\u00e9e" },
+    { id: "C1", kind: "caption", text: "24 crackers" },
+    { id: "C2", kind: "caption", text: "Arrange 12 crackers." }
+  ]);
+  assert.equal(result.draft.ingredients[0]!.quantity, "0.25");
+  assert.equal(result.draft.ingredients[1]!.quantity, "24");
+});
+test("structured caption extraction excludes prior advertising/identity links without removing explicit yield facts", () => {
+  const input = extractionInput(url, { caption: "#ad Follow @advertiser for certified offers https://example.invalid\nServes 4\nINGREDIENTS\n400 g tomatoes\nINSTRUCTIONS\nBoil tomatoes.",
+    comments: [], transcript: null });
+  const text = JSON.stringify(input);
+  assert(!text.includes("advertiser"));
+  assert(!text.includes("example.invalid"));
+  assert(!text.includes("certified"));
+  assert(text.includes("Serves 4"));
+  assert(text.includes("400 g tomatoes"));
+});
 test("audio-only evidence cannot borrow quantities, durations or servings from video metadata", () => {
   const value = recipe();
   value.ingredients[0]!.quantity = null;

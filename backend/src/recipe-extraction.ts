@@ -50,7 +50,17 @@ export function extractionInput(sourceURL: string, evidence: Evidence): { source
       sources.push({ id: prefix + sources.length, kind, text: paragraph.trim() });
     }
   };
-  append("caption", "C", evidence.caption);
+  let caption = evidence.caption;
+  if (caption) {
+    const lines = caption.split(/\r?\n/);
+    const ingredientStart = lines.findIndex(line => /^\s*ingredients?\s*:?\s*$/i.test(line));
+    if (ingredientStart >= 0) {
+      caption = [...lines.slice(0, ingredientStart).filter(line => /^\s*(?:serves|servings|yield|total\s+time|prep\s+time|cook\s+time)\b/i.test(line)),
+        ...lines.slice(ingredientStart)].join("\n");
+    }
+    caption = caption.replace(/https?:\/\/\S+|@[A-Za-z0-9_.]+|#[A-Za-z0-9_]+/g, "");
+  }
+  append("caption", "C", caption);
   append("transcript", "T", evidence.transcript);
   for (const comment of evidence.comments.slice(0, 20)) {
     // Commenter identity/links are not inference inputs; only cooking-bearing
@@ -80,10 +90,11 @@ export function extractionJSONSchema(ids: string[]) {
       instruction: { type: "string" }, duration_minutes_min: nullableNumber, duration_minutes_max: nullableNumber,
       temperature_c: nullableNumber, evidence_ids: refs
     }) },
-    warnings: { type: "array", items: { type: "string" } }, requires_review: { type: "boolean", const: true }
+    warnings: { type: "array", items: { type: "string" } }, requires_review: { type: "boolean" }
   });
 }
-const normalized = (text: string) => text.toLowerCase().normalize("NFKC").replace(/[’']/g, "").replace(/[^a-z0-9/.\s-]/g, " ");
+const normalized = (text: string) => text.toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "").replace(/\u2044/g, "/")
+  .replace(/[’']/g, "").replace(/[^a-z0-9/.\s-]/g, " ");
 const words = (text: string) => normalized(text).split(/\s+/).map(word => word.replace(/^[.-]+|[.-]+$/g, "").replace(/(?:es|s)$/, "")).filter(Boolean);
 const amountPattern = String.raw`(?:\d+\s+\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?)`;
 function amount(text: string): number {
@@ -102,6 +113,7 @@ function ingredientAmounts(name: string, sources: ExtractionSource[]) {
   const found: { quantity: number; unit: string | null; id: string }[] = [];
   for (const source of sources) {
     for (const clause of normalized(source.text).split(/[;\n]|(?<=[a-z])\.(?:\s|$)/)) {
+      if (/^\s*(?:arrange|spoon|pipe)\b|\b(?:per|each)\s+(?:sandwich|serving|cracker|piece)\b/.test(clause)) continue;
       const clauseWords = new Set(words(clause));
       if (!tokens.every(token => clauseWords.has(token))) continue;
       const matches = [...clause.matchAll(new RegExp(`(${amountPattern})\\s*(g|kg|ml|l|oz|lb|cups?|tsp|tbsp|grams?|kilograms?|milliliters?|liters?|ounces?|pounds?|teaspoons?|tablespoons?|pieces?)?\\s+([^;,]+)`, "gi"))];

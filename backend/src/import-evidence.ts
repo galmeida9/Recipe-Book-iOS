@@ -9,7 +9,7 @@ export const evidenceSchema = z.object({
   warnings: z.array(z.string().max(500)).max(100).optional(),
   extraction: extractedRecipeSchema.optional(),
   sources: sourcesSchema.optional(),
-  modelExecution: z.object({ provider: z.literal("gemini-free"), model: z.string().max(100), requestId: z.string().max(200).nullable(),
+  modelExecution: z.object({ provider: z.enum(["gemini-free", "azure-credits"]), model: z.string().max(100), requestId: z.string().max(200).nullable(),
     inputTokens: z.number().int().nonnegative().nullable(), outputTokens: z.number().int().nonnegative().nullable() }).strict().optional()
 }).strict();
 

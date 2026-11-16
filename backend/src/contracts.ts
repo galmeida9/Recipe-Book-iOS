@@ -36,7 +36,7 @@ export interface ShoppingList { id: string; name: string; items: ShoppingItem[];
 export interface Evidence {
   caption: string | null; comments: string[]; transcript: string | null;
   warnings?: string[] | undefined; extraction?: ExtractedRecipe | undefined; sources?: ExtractionSource[] | undefined;
-  modelExecution?: { provider: "gemini-free"; model: string; requestId: string | null; inputTokens: number | null; outputTokens: number | null } | undefined;
+  modelExecution?: { provider: "gemini-free" | "azure-credits"; model: string; requestId: string | null; inputTokens: number | null; outputTokens: number | null } | undefined;
 }
 export type ImportState = "queued" | "running" | "review" | "failed" | "completed" | "discarded";
 export interface ImportJob {
