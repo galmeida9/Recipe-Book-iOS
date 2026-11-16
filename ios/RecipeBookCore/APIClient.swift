@@ -39,10 +39,11 @@ public actor APIClient {
         try await request("PATCH", "account", body: Setup(displayName: displayName))
     }
     public func books() async throws -> [Book] { try await request("GET", "books") }
-    public func uploadCover(_ data: Data) async throws -> UUID {
+    public func uploadCover(_ data: Data, idempotencyKey: UUID = UUID(), expectedAccountID: UUID? = nil) async throws -> UUID {
         struct Upload: Encodable { let jpegBase64: String }
         struct Uploaded: Decodable { let id: UUID }
-        let value: Uploaded = try await request("POST", "recipe-images", body: Upload(jpegBase64: data.base64EncodedString()))
+        let value: Uploaded = try await request("POST", "recipe-images", body: Upload(jpegBase64: data.base64EncodedString()),
+            idempotencyKey: idempotencyKey, expectedAccountID: expectedAccountID)
         return value.id
     }
     public func coverData(id: UUID) async throws -> Data {

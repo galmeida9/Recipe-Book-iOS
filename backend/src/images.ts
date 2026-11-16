@@ -3,7 +3,7 @@ import { DefaultAzureCredential } from "@azure/identity";
 import { AppError, invariant, requiredSetting } from "./contracts.js";
 import { query } from "./database.js";
 import { bookAccess, RecipeBookService } from "./service.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import jpeg from "jpeg-js";
 
@@ -47,25 +47,37 @@ function privateBlobs() {
     !endpoint.search && !endpoint.username && !endpoint.password, 503, "configuration", "A private Azure Blob endpoint is required.");
   return new BlobServiceClient(endpoint.toString(), new DefaultAzureCredential()).getContainerClient("recipe-images");
 }
-export async function uploadRecipeImage(service: RecipeBookService, input: unknown) {
+export async function uploadRecipeImage(service: RecipeBookService, input: unknown, key: string, expectedAccountId?: string) {
   const { jpegBase64 } = z.object({ jpegBase64: z.string().max(2_796_204) }).strict().parse(input);
   const inputData = Buffer.from(jpegBase64, "base64");
   invariant(inputData.toString("base64") === jpegBase64, 400, "invalid_cover", "Send canonical JPEG base64.");
   const data = sanitizeCoverJPEG(inputData);
-  const id = randomUUID();
-  const blobName = "covers/" + id + ".jpg";
-  await service.execute(async (transaction, userId) => {
+  const hash = createHash("sha256").update(data).digest("hex");
+  const id = await service.execute(async (transaction, userId) => {
+    invariant(!expectedAccountId || expectedAccountId === userId, 409, "account_changed", "The signed-in account changed during the image copy.");
+    const previous = await query<{ imageId: string; hash: string }>(transaction, `SELECT CONVERT(varchar(36),ImageId) AS imageId,
+      ContentHash AS hash FROM dbo.ImageUploadRequests WITH(UPDLOCK,HOLDLOCK) WHERE UserId=@userId AND RequestKey=@key`, { userId, key });
+    if (previous[0]) {
+      invariant(previous[0].hash === hash, 409, "idempotency_conflict", "This photo-upload key belongs to different pixels.");
+      const current = await query(transaction, "SELECT Id FROM dbo.RecipeImages WHERE Id=@id AND OwnerId=@userId", { id: previous[0].imageId, userId });
+      invariant(current.length === 1, 409, "image_deleted", "This photo upload was deleted and will not be recreated by retrying.");
+      return previous[0].imageId.toLowerCase();
+    }
     const limits = await query<{ count: number }>(transaction, "SELECT COUNT(*) AS count FROM dbo.RecipeImages WITH(UPDLOCK,HOLDLOCK) WHERE OwnerId=@userId", { userId });
     invariant(limits[0]!.count < 500, 409, "image_limit", "This account has reached its cover-photo limit.");
     const budget = await query(transaction, `UPDATE dbo.Accounts SET CoverUploads=CoverUploads+1 OUTPUT inserted.Id
       WHERE Id=@userId AND CoverUploads<500`, { userId });
     invariant(budget.length === 1, 409, "image_limit", "This account's trial cover-upload allowance is exhausted. Failed uploads also consume this bounded storage allowance.");
+    const id = randomUUID();
+    const blobName = "covers/" + id + ".jpg";
     await query(transaction, "INSERT dbo.RecipeImages(Id,RecipeId,OwnerId,BlobName,ContentType,SizeBytes) VALUES(@id,NULL,@userId,@blobName,'image/jpeg',@size)",
       { id, userId, blobName, size: data.length });
+    await query(transaction, "INSERT dbo.ImageUploadRequests(UserId,RequestKey,ContentHash,ImageId) VALUES(@userId,@key,@hash,@id)", { userId, key, hash, id });
+    return id;
   });
   // Persist the reservation before external I/O. A database retry cannot create
   // untracked blobs; failed/unknown uploads retain their quota reservation.
-  await privateBlobs().getBlockBlobClient(blobName).uploadData(data, { blobHTTPHeaders: { blobContentType: "image/jpeg" }, conditions: { ifNoneMatch: "*" } });
+  await privateBlobs().getBlockBlobClient("covers/" + id + ".jpg").uploadData(data, { blobHTTPHeaders: { blobContentType: "image/jpeg" } });
   return { id };
 }
 

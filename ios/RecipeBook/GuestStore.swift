@@ -3,18 +3,20 @@ import RecipeBookCore
 import RecipeBookPresentation
 import ImageIO
 import UniformTypeIdentifiers
+import CryptoKit
 
 func guestFailure(_ message: String, status: Int = 0, code: String = "client_state") -> APIError {
     APIError(status: status, code: code, message: message)
 }
 
-func guestPhotoCopyUnsupported() -> APIError {
-    guestFailure("Copying books with photos is not supported yet. Your on-device book, recipes and photos have not been changed.",
-                 code: "local_copy_photos_unsupported")
+func guestCopySnapshotChanged() -> APIError {
+    guestFailure("The saved copy snapshot does not match this book or its photos. No new copy was sent. Your on-device originals and saved copy journal have been kept.",
+                 code: "local_copy_snapshot_changed")
 }
 
-/// The copy transport must POST this exact payload with `idempotencyKey` as Idempotency-Key.
-/// It must use the authenticated account identified by accountID, not whichever account is current later.
+/// The transport uploads `photos` using account-bound deterministic keys, then replaces each
+/// corresponding payload recipe's device cover UUID with the uploaded account image UUID before
+/// POSTing. Device cover UUIDs are snapshot references only, never authorized cloud image IDs.
 struct LocalBookCopy: Codable, Sendable {
     struct Payload: Codable, Sendable {
         let name: String
@@ -26,6 +28,62 @@ struct LocalBookCopy: Codable, Sendable {
     let localVersion: Int
     let idempotencyKey: UUID
     let payload: Payload
+    /// Recipe array index -> immutable JPEG. This is outside the book-copy API payload.
+    let photos: [Int: Data]
+
+    init(accountID: String, localBookID: String, localVersion: Int, idempotencyKey: UUID,
+         payload: Payload, photos: [Int: Data] = [:]) {
+        self.accountID = accountID
+        self.localBookID = localBookID
+        self.localVersion = localVersion
+        self.idempotencyKey = idempotencyKey
+        self.payload = payload
+        self.photos = photos
+    }
+    private enum CodingKeys: String, CodingKey {
+        case accountID, localBookID, localVersion, idempotencyKey, payload, photos
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        accountID = try values.decode(String.self, forKey: .accountID)
+        localBookID = try values.decode(String.self, forKey: .localBookID)
+        localVersion = try values.decode(Int.self, forKey: .localVersion)
+        idempotencyKey = try values.decode(UUID.self, forKey: .idempotencyKey)
+        payload = try values.decode(Payload.self, forKey: .payload)
+        photos = try values.decodeIfPresent([Int: Data].self, forKey: .photos) ?? [:]
+    }
+    func validatePhotos() throws {
+        guard photos.keys.allSatisfy({ payload.recipes.indices.contains($0) }),
+              payload.recipes.enumerated().allSatisfy({ ($0.element.coverImageID != nil) == (photos[$0.offset] != nil) }) else {
+            throw guestFailure("The saved copy is missing a photo or has an invalid photo reference. Your originals have been kept.",
+                               code: "local_copy_photos")
+        }
+        for bytes in photos.values { try GuestStore.validateJPEG(bytes) }
+    }
+    /// Stable content fingerprint includes account binding and photo SHA-256 digests, but not the
+    /// retry key. Two different snapshots must never be submitted under the same retry key.
+    var operationHash: String {
+        get throws {
+            struct Snapshot: Encodable {
+                let accountID: String
+                let localBookID: String
+                let localVersion: Int
+                let payload: Payload
+                let photoDigests: [String: String]
+            }
+            let digests = Dictionary(uniqueKeysWithValues: photos.map {
+                (String($0.key), Self.digest($0.value))
+            })
+            let snapshot = Snapshot(accountID: accountID, localBookID: localBookID, localVersion: localVersion,
+                                    payload: payload, photoDigests: digests)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            return Self.digest(try encoder.encode(snapshot))
+        }
+    }
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 /// Synchronous transactions prevent actor reentrancy between a version check and atomic persistence.
@@ -58,10 +116,10 @@ final class GuestStore: @unchecked Sendable {
         var mealStyle: RecipeBookCore.MealStyle?
         var coverImageID: String?
         func copyDraft() throws -> RecipeBookCore.RecipeDraft {
-            guard coverImageID == nil else { throw guestPhotoCopyUnsupported() }
             var draft = RecipeBookCore.RecipeDraft(title: title, ingredients: ingredients.map(\.ingredient), steps: steps.map(\.text),
                   servings: servings, totalMinutes: totalMinutes, sourceURL: sourceURL)
             draft.mealStyle = mealStyle
+            draft.coverImageID = try coverImageID.map { try GuestStore.uuid($0) }
             return draft
         }
         func detail(identity: String) -> RecipeDetail {

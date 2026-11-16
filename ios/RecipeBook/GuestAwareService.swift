@@ -332,22 +332,32 @@ actor GuestAwareService: RecipeBookService {
         let epoch = generation
         let record = try store.transaction { state in
             guard let book = state.books.first(where: { $0.id == id }) else { throw guestFailure("On-device book not found.", status: 404, code: "not_found") }
-            // Validate before reusing a journal entry: older versions could have omitted photos
-            // from a pending snapshot. Never silently resume that incomplete copy.
-            let recipes = try state.recipes.filter { $0.bookID == id }.sorted { $0.id < $1.id }.map { try $0.copyDraft() }
+            let localRecipes = state.recipes.filter { $0.bookID == id }.sorted { $0.id < $1.id }
+            let recipes = try localRecipes.map { try $0.copyDraft() }
+            var photos: [Int: Data] = [:]
+            for (index, recipe) in localRecipes.enumerated() {
+                guard let imageID = recipe.coverImageID else { continue }
+                guard let bytes = state.images[imageID] else {
+                    throw guestFailure("A recipe photo is missing. Your on-device book has not been copied or changed.",
+                                       code: "local_copy_photos")
+                }
+                photos[index] = bytes
+            }
             let coreKind: RecipeBookCore.BookKind = kind == .shared ? .shared : .personal
+            let operation = LocalBookCopy(accountID: profile.id, localBookID: id, localVersion: book.version,
+                            idempotencyKey: UUID(), payload: .init(name: book.name, kind: coreKind,
+                            recipes: recipes), photos: photos)
+            try operation.validatePhotos()
             if let existing = state.copies.first(where: {
                 $0.operation.accountID == profile.id && $0.operation.localBookID == id
                     && $0.operation.localVersion == book.version && $0.operation.payload.kind == coreKind
             }) {
-                guard existing.operation.payload.recipes.allSatisfy({ $0.coverImageID == nil }) else {
-                    throw guestPhotoCopyUnsupported()
-                }
+                try existing.operation.validatePhotos()
+                // This also blocks old photo-stripped journals, without changing their keys or
+                // risking a second cloud book after an earlier response was lost.
+                guard try existing.operation.operationHash == operation.operationHash else { throw guestCopySnapshotChanged() }
                 return existing
             }
-            let operation = LocalBookCopy(accountID: profile.id, localBookID: id, localVersion: book.version,
-                            idempotencyKey: UUID(), payload: .init(name: book.name, kind: coreKind,
-                            recipes: recipes))
             let record = GuestStore.CopyRecord(operation: operation, result: nil)
             state.copies.append(record)
             return record
@@ -362,6 +372,9 @@ actor GuestAwareService: RecipeBookService {
             try store.transaction { state in
                 guard let index = state.copies.firstIndex(where: { $0.operation.idempotencyKey == record.operation.idempotencyKey }) else {
                     throw guestFailure("The on-device copy journal is missing.")
+                }
+                guard try state.copies[index].operation.operationHash == record.operation.operationHash else {
+                    throw guestCopySnapshotChanged()
                 }
                 state.copies[index].result = result
             }

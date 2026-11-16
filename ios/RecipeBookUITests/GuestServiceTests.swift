@@ -495,7 +495,7 @@ final class GuestServiceTests: XCTestCase {
         XCTAssertNil(requests[1].value(forHTTPHeaderField: "X-Recipe-Account-ID"))
         XCTAssertNil(requests[1].value(forHTTPHeaderField: "Idempotency-Key"))
     }
-    func testCopyWithPhotosFailsExplicitlyBeforeJournalOrTransportAndPreservesOriginal() async throws {
+    func testPhotoCopySnapshotSurvivesReopenRetryAndPreservesOriginal() async throws {
         let directory = try directory()
         let factory = GuestFactoryProbe()
         let copy = GuestCopyProbe()
@@ -507,26 +507,44 @@ final class GuestServiceTests: XCTestCase {
         let recipe = try await service.saveRecipe(.init(bookID: book.id, title: "Original", sourceURL: source,
             mealStyle: .full, coverImageEdit: .replace(jpegData: bytes)))
         _ = try await service.signIn()
-        let file = directory.appendingPathComponent("guest-store.json")
-        let before = try Data(contentsOf: file)
         do {
             _ = try await service.copyLocalBookToAccount(id: book.id, kind: .shared)
-            XCTFail("Photo copying must fail explicitly, not strip the cover.")
-        } catch let error as APIError {
-            XCTAssertEqual(error.code, "local_copy_photos_unsupported")
-            XCTAssertTrue(error.message.contains("not supported yet"))
-        }
-        XCTAssertEqual(try Data(contentsOf: file), before)
-        let retained = try await service.recipe(id: recipe.id)
+            XCTFail("The lost transport response must surface.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "transport") }
+        let persisted = try GuestStore(directory: directory).read()
+        let journal = try XCTUnwrap(persisted.copies.first)
+        XCTAssertEqual(journal.operation.photos, [0: bytes])
+        XCTAssertEqual(journal.operation.payload.recipes[0].coverImageID,
+                       try GuestStore.uuid(XCTUnwrap(recipe.summary.coverImage).id))
+        XCTAssertEqual(journal.operation.payload.recipes[0].sourceURL, source)
+        XCTAssertEqual(journal.operation.payload.recipes[0].mealStyle, .full)
+        try journal.operation.validatePhotos()
+        let reopened = try self.service(directory, factory, copy: copy)
+        let copied = try await reopened.copyLocalBookToAccount(id: book.id, kind: .shared)
+        XCTAssertEqual(copied.storage, .account)
+        let retained = try await reopened.recipe(id: recipe.id)
         XCTAssertEqual(retained, recipe)
         XCTAssertEqual(retained.sourceURL, source)
         XCTAssertEqual(retained.summary.mealStyle, .full)
         let photo = try XCTUnwrap(retained.summary.coverImage)
-        let retainedBytes = try await service.imageData(photo)
+        let retainedBytes = try await reopened.imageData(photo)
         XCTAssertEqual(retainedBytes, bytes)
         let operations = await copy.operations
-        XCTAssertTrue(operations.isEmpty)
-        XCTAssertTrue(try GuestStore(directory: directory).read().copies.isEmpty)
+        XCTAssertEqual(operations.count, 2)
+        XCTAssertEqual(operations[0].idempotencyKey, operations[1].idempotencyKey)
+        XCTAssertEqual(operations[0].photos, operations[1].photos)
+        XCTAssertEqual(try operations[0].operationHash, try operations[1].operationHash)
+        XCTAssertEqual(operations[1].accountID, "account-one")
+        try await reopened.signOut()
+        await factory.configure(accountID: "account-two")
+        _ = try await reopened.signIn()
+        _ = try await reopened.copyLocalBookToAccount(id: book.id, kind: .shared)
+        let otherAccount = await copy.operations
+        XCTAssertEqual(otherAccount.count, 3)
+        XCTAssertEqual(otherAccount[2].photos, [0: bytes])
+        XCTAssertEqual(otherAccount[2].accountID, "account-two")
+        XCTAssertNotEqual(otherAccount[2].idempotencyKey, operations[0].idempotencyKey)
+        XCTAssertNotEqual(try otherAccount[2].operationHash, try operations[0].operationHash)
     }
     func testOldPhotoStrippedPendingCopyIsNotRetriedOrRewritten() async throws {
         let directory = try directory()
@@ -554,11 +572,83 @@ final class GuestServiceTests: XCTestCase {
         do {
             _ = try await reopened.copyLocalBookToAccount(id: book.id, kind: .shared)
             XCTFail("An older photo-stripped journal must not bypass the guard.")
-        } catch let error as APIError { XCTAssertEqual(error.code, "local_copy_photos_unsupported") }
+        } catch let error as APIError { XCTAssertEqual(error.code, "local_copy_snapshot_changed") }
         XCTAssertEqual(try Data(contentsOf: file), before)
         XCTAssertEqual(try store.read().copies[0].operation.idempotencyKey, key)
         let operations = await copy.operations
         XCTAssertTrue(operations.isEmpty)
+    }
+    func testPhotoCopyRejectsSameVersionChangedBytesWithoutReusingOrRewritingKey() async throws {
+        let directory = try directory()
+        let factory = GuestFactoryProbe()
+        let copy = GuestCopyProbe()
+        let service = try service(directory, factory, copy: copy)
+        _ = try await service.continueWithoutSignIn()
+        let book = try await service.createBook(name: "Immutable", kind: .personal)
+        let original = try jpeg()
+        let recipe = try await service.saveRecipe(.init(bookID: book.id, title: "Original",
+                                                        coverImageEdit: .replace(jpegData: original)))
+        _ = try await service.signIn()
+        do {
+            _ = try await service.copyLocalBookToAccount(id: book.id, kind: .shared)
+            XCTFail("The first response is lost.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "transport") }
+        let store = try GuestStore(directory: directory)
+        let before = try XCTUnwrap(store.read().copies.first?.operation)
+        let changedBytes = try jpeg(width: 14)
+        let imageID = try XCTUnwrap(recipe.summary.coverImage?.id)
+        // Simulate inconsistent external storage without a recipe/book version change.
+        try store.transaction { $0.images[imageID] = changedBytes }
+        let reopened = try self.service(directory, factory, copy: copy)
+        do {
+            _ = try await reopened.copyLocalBookToAccount(id: book.id, kind: .shared)
+            XCTFail("The same key must not be used for different photo bytes.")
+        } catch let error as APIError { XCTAssertEqual(error.code, "local_copy_snapshot_changed") }
+        let after = try XCTUnwrap(store.read().copies.first?.operation)
+        XCTAssertEqual(after.idempotencyKey, before.idempotencyKey)
+        XCTAssertEqual(after.photos, [0: original])
+        XCTAssertEqual(try after.operationHash, try before.operationHash)
+        let operations = await copy.operations
+        XCTAssertEqual(operations.count, 1)
+        let changed = LocalBookCopy(accountID: before.accountID, localBookID: before.localBookID,
+            localVersion: before.localVersion, idempotencyKey: before.idempotencyKey,
+            payload: before.payload, photos: [0: changedBytes])
+        XCTAssertNotEqual(try changed.operationHash, try before.operationHash)
+    }
+    func testCopyJournalWithoutPhotosFieldDecodesAndAttachmentValidationIsStrict() throws {
+        let accountID = "account"
+        let operation = LocalBookCopy(accountID: accountID, localBookID: GuestStore.newID(), localVersion: 1,
+            idempotencyKey: UUID(), payload: .init(name: "Old journal", kind: .personal, recipes: [
+                .init(title: "Soup", ingredients: [], steps: [], mealStyle: .simple)
+            ]))
+        var oldJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(operation)) as? [String: Any])
+        oldJSON.removeValue(forKey: "photos")
+        let decoded = try JSONDecoder().decode(LocalBookCopy.self, from: JSONSerialization.data(withJSONObject: oldJSON))
+        XCTAssertTrue(decoded.photos.isEmpty)
+        XCTAssertEqual(decoded.idempotencyKey, operation.idempotencyKey)
+        XCTAssertEqual(try decoded.operationHash, try operation.operationHash)
+        try decoded.validatePhotos()
+        var withCover = operation.payload.recipes[0]
+        withCover.coverImageID = UUID()
+        let missing = LocalBookCopy(accountID: accountID, localBookID: operation.localBookID, localVersion: 1,
+            idempotencyKey: operation.idempotencyKey, payload: .init(name: "Missing photo", kind: .personal, recipes: [withCover]))
+        XCTAssertThrowsError(try missing.validatePhotos())
+        let unexpected = LocalBookCopy(accountID: accountID, localBookID: operation.localBookID, localVersion: 1,
+            idempotencyKey: operation.idempotencyKey, payload: operation.payload, photos: [0: try jpeg()])
+        XCTAssertThrowsError(try unexpected.validatePhotos())
+        let outOfRange = LocalBookCopy(accountID: accountID, localBookID: operation.localBookID, localVersion: 1,
+            idempotencyKey: operation.idempotencyKey, payload: operation.payload, photos: [1: try jpeg()])
+        XCTAssertThrowsError(try outOfRange.validatePhotos())
+        let bytes = try jpeg()
+        let sparse = LocalBookCopy(accountID: accountID, localBookID: operation.localBookID, localVersion: 1,
+            idempotencyKey: UUID(), payload: .init(name: "Sparse", kind: .personal,
+                                                  recipes: [operation.payload.recipes[0], withCover]), photos: [1: bytes])
+        try sparse.validatePhotos()
+        let reopened = try JSONDecoder().decode(LocalBookCopy.self, from: JSONEncoder().encode(sparse))
+        XCTAssertEqual(reopened.photos, [1: bytes])
+        XCTAssertNil(reopened.payload.recipes[0].coverImageID)
+        XCTAssertEqual(reopened.payload.recipes[1].coverImageID, withCover.coverImageID)
+        XCTAssertEqual(try reopened.operationHash, try sparse.operationHash)
     }
     func testCopyTransportSurfacesAccountMismatchWithoutRetryOrFallback() async throws {
         GuestCopyHTTP.state.reset(status: 409)

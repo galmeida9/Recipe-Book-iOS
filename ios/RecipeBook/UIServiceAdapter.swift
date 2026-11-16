@@ -60,6 +60,8 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
 
     func books() async throws -> [BookSummary] {
         let values = try await api.books()
+        bookCache = [:]
+        recipeCache = [:]
         var result: [BookSummary] = []
         for value in values {
             try Task.checkCancellation()
@@ -67,7 +69,7 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
             let recipes = try await api.recipes(bookId: value.id)
             let members = try await api.members(bookId: value.id)
             recipes.forEach { recipeCache[$0.id] = $0 }
-            result.append(summary(value, recipes: recipes.count, members: members.count))
+            result.append(summary(value, recipes: recipes.count, members: members.count, coverImageID: recipes.compactMap(\.draft.coverImageID).first))
         }
         return result
     }
@@ -83,10 +85,11 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         bookCache[value.id] = value
         let recipes = try await api.recipes(bookId: uuid)
         let members = try await api.members(bookId: uuid)
+        recipeCache = recipeCache.filter { $0.value.bookId != uuid }
         recipes.forEach { recipeCache[$0.id] = $0 }
         let account = try await account()
         return BookDetail(
-            summary: summary(value, recipes: recipes.count, members: members.count),
+            summary: summary(value, recipes: recipes.count, members: members.count, coverImageID: recipes.compactMap(\.draft.coverImageID).first),
             currentUserID: string(account.id),
             recipes: recipes.map { recipeSummary($0, members: members) },
             members: members.map { BookMember(id: string($0.userId), displayName: $0.displayName ?? string($0.userId), role: role($0.role)) }
@@ -399,9 +402,10 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
     private func steps(_ values: [String], prefix: String) -> [RecipeStep] {
         values.enumerated().map { RecipeStep(id: "\(prefix)-step-\($0.offset)", text: $0.element) }
     }
-    private func summary(_ value: RecipeBookCore.Book, recipes: Int, members: Int) -> BookSummary {
+    private func summary(_ value: RecipeBookCore.Book, recipes: Int, members: Int, coverImageID: UUID? = nil) -> BookSummary {
         BookSummary(id: string(value.id), name: value.name, kind: value.kind == .shared ? .shared : .personal,
-                    myRole: role(value.role), recipeCount: recipes, memberCount: members)
+                    myRole: role(value.role), recipeCount: recipes, memberCount: members,
+                    coverImage: coverImageID.map { ImageRef(id: string($0)) })
     }
     private func role(_ value: BookRole) -> MemberRole { value == .owner ? .owner : .member }
     private func listSummary(_ value: RecipeBookCore.ShoppingList) -> ShoppingListSummary {

@@ -156,9 +156,10 @@ export class RecipeBookService {
       }
       const book = await createStoredBook(transaction, userId, { name: body.name, kind: body.kind });
       for (const draft of body.recipes) {
-        invariant(!draft.coverImageID, 400, "copy_image", "Local photos must be copied through the dedicated image upload flow.");
+        const recipeId = randomUUID();
         await query(transaction, "INSERT dbo.Recipes(Id,BookId,AuthorId,Draft) VALUES(@id,@bookId,@userId,@draft)",
-          { id: randomUUID(), bookId: book.id, userId, draft: JSON.stringify(draft) });
+          { id: recipeId, bookId: book.id, userId, draft: JSON.stringify(draft) });
+        await bindCover(transaction, userId, recipeId, draft.coverImageID);
       }
       await query(transaction, "INSERT dbo.LocalBookCopies(UserId,RequestKey,SnapshotHash,BookId) VALUES(@userId,@key,@hash,@bookId)",
         { userId, key, hash: snapshotHash, bookId: book.id });

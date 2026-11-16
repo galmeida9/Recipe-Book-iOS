@@ -147,6 +147,34 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     aliceId = (await alice.me()).id;
     bobId = (await bob.me()).id;
     await outsider.me();
+    const copyKey = randomUUID();
+    const localPayload = { name: "Synthetic local copy", kind: "personal", recipes: [{
+      title: "Copied source", ingredients: [], steps: ["Keep source order."], mealStyle: "simple",
+      sourceURL: "https://www.instagram.com/reel/CopiedSource/"
+    }] };
+    const copies = await Promise.all([alice.copyLocalBook(localPayload, copyKey, aliceId), alice.copyLocalBook(localPayload, copyKey, aliceId)]);
+    assert.equal(copies[0]!.id, copies[1]!.id, "Concurrent immutable-snapshot copy creates exactly one account book.");
+    const copiedRecipe = (await alice.recipes(copies[0]!.id))[0]!;
+    assert.equal(copiedRecipe.draft.mealStyle, "simple");
+    assert.equal(copiedRecipe.draft.sourceURL, localPayload.recipes[0]!.sourceURL);
+    await assert.rejects(() => alice.copyLocalBook({ ...localPayload, name: "Changed snapshot" }, copyKey, aliceId),
+      (error: unknown) => error instanceof AppError && error.code === "idempotency_conflict");
+    await assert.rejects(() => alice.copyLocalBook(localPayload, randomUUID(), bobId),
+      (error: unknown) => error instanceof AppError && error.code === "account_changed");
+    const coverId = randomUUID();
+    await serializable(transaction => query(transaction, `INSERT dbo.RecipeImages(Id,RecipeId,OwnerId,BlobName,ContentType,SizeBytes)
+      VALUES(@id,NULL,@userId,@blobName,'image/jpeg',1)`, { id: coverId, userId: aliceId, blobName: "synthetic-copy-" + coverId }));
+    const photoPayload = { ...localPayload, recipes: [{ ...localPayload.recipes[0]!, coverImageID: coverId }] };
+    await assert.rejects(() => bob.copyLocalBook(photoPayload, randomUUID(), bobId),
+      (error: unknown) => error instanceof AppError && error.code === "image_owner");
+    const photoCopyKey = randomUUID();
+    const photoCopy = await alice.copyLocalBook(photoPayload, photoCopyKey, aliceId);
+    assert.equal((await alice.recipes(photoCopy.id))[0]!.draft.coverImageID, coverId);
+    assert.equal((await alice.copyLocalBook(photoPayload, photoCopyKey, aliceId)).id, photoCopy.id,
+      "A photo-bearing copied snapshot retries without attaching a photo to a second recipe.");
+    const sourceEdited = await alice.saveRecipe(photoCopy.id, { ...copiedRecipe.draft, sourceURL: null },
+      (await alice.recipes(photoCopy.id))[0]!.id, 1);
+    assert.equal(sourceEdited.draft.sourceURL, localPayload.recipes[0]!.sourceURL, "Recipe editing cannot silently discard original Instagram attribution.");
     const privateBook = await alice.createBook({ name: "Private", kind: "personal" });
     let shared = await alice.createBook({ name: "Shared", kind: "shared" });
     sharedId = shared.id;

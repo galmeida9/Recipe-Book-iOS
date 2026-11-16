@@ -137,7 +137,8 @@ export async function dispatch(request: HttpRequest, service: RecipeBookService,
       }
     }
   } else if (path.length === 1 && path[0] === "recipe-images" && method === "POST") {
-    result = await uploadRecipeImage(service, await body(request, 2_800_000));
+    result = await uploadRecipeImage(service, await body(request, 2_800_000), idSchema.parse(request.headers.get("idempotency-key")),
+      request.headers.has("x-recipe-account-id") ? idSchema.parse(request.headers.get("x-recipe-account-id")) : undefined);
   } else if (path.length === 2 && path[0] === "recipe-images" && method === "GET") {
     const image = await readRecipeImage(service, id(1));
     return { status: 200, body: image.data, headers: { ...jsonHeaders, "Content-Type": image.contentType } };
