@@ -31,3 +31,11 @@ test("provider rejects undocumented evidence shapes instead of assuming transcri
   await assert.rejects(() => provider.evidence({ id: "r", status: "SUCCEEDED", defaultDatasetId: "d", options: { maxTotalChargeUsd: 0.1, isMaxTotalChargeUsdSetByUser: true } }),
     (error: unknown) => error instanceof AppError && error.code === "provider_shape");
 });
+test("provider reports a bounded scope error type but never echoes credential-bearing response messages", async () => {
+  process.env["APIFY_TOKEN"] = "synthetic-token-not-for-output";
+  const provider = new ApifyProvider(async () => Response.json({
+    error: { type: "insufficient-permissions", message: "private token synthetic-token-not-for-output" }
+  }, { status: 403 }));
+  await assert.rejects(() => provider.run("fixture-run"), (error: unknown) =>
+    error instanceof AppError && error.message === "Import provider returned HTTP 403 (insufficient-permissions).");
+});

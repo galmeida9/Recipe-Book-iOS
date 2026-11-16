@@ -59,6 +59,31 @@ through a masked operator prompt. Never use MCP credentials or place tokens in
 source, the phone bundle, CI logs or chat. No Azure/OpenAI resource or separate
 OpenRouter billing account is needed for this candidate.
 
+### Explicit restricted-token budget mode
+
+`APIFY_BUDGET_MODE=api-usage` is the default. It requires actual monthly usage
+access and account exclusivity; HTTP 403 is an error, never a fallback trigger.
+The reviewed three-actor scoped token has no account-usage permission in the
+provider UI and actually returned 403 for `/users/me/usage/monthly`.
+
+For this shared Free account, `APIFY_BUDGET_MODE=verified-free-stop` explicitly
+uses the operator's dated console proof instead. It requires
+`APIFY_BACKEND_LEDGER_VERIFIED=true`, verified Free/no-overage flags,
+`APIFY_FREE_STOP_VERIFIED_AT`, `APIFY_VERIFIED_CYCLE_START`,
+`APIFY_VERIFIED_CYCLE_END`, `APIFY_VERIFIED_SPENT_MICROS` and
+`APIFY_PILOT_CAP_MICROS`. The pilot ledger cap cannot exceed USD 1, including
+the observed usage lower bound and all app reservations. Proof expires after
+24 hours or the conservative reviewed cycle end, whichever is earlier; new jobs
+fail visibly when fewer than 15 minutes remain.
+
+This mode does **not** claim visibility of global current usage or reservations
+from MCP/other projects. `APIFY_ACCOUNT_EXCLUSIVE=false` is accurate for this
+account. The real provider-wide USD 5 pause-at-exhaustion control, without a
+payment method or upgrades, is the ultimate cross-project hard stop. Unknown
+external usage can exhaust the allowance early; provider failures remain visible.
+Only this backend's jobs share its transactional ledger. Preflight reports the
+mode, observed snapshot, expiry and `globalUsageVisible=false` explicitly.
+
 Migration `006-import-pipeline.sql` adds the persisted stage journal. A stage's
 dispatch intent commits before its external POST. A run ID and completed stage
 are persisted before advancing. Build/cap configuration is hashed per job;

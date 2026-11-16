@@ -16,7 +16,35 @@ const usageSchema = z.object({
   })
 });
 export type ProviderRun = z.infer<typeof runSchema>;
-export interface ProviderBudget { month: string; spentMicros: number; endsAt: Date; capMicros: number; reserveMicros: number }
+export interface ProviderBudget {
+  month: string; spentMicros: number; endsAt: Date; capMicros: number; reserveMicros: number;
+  visibility?: "api-usage" | "verified-free-stop";
+  verifiedAt?: string;
+}
+
+export function verifiedFreeStopBudget(reserveMicros: number, now = Date.now()): ProviderBudget {
+  invariant(process.env["APIFY_FREE_PLAN_VERIFIED"] === "true" && process.env["APIFY_NO_OVERAGES_VERIFIED"] === "true" &&
+    process.env["APIFY_BACKEND_LEDGER_VERIFIED"] === "true", 503, "budget_proof", "The restricted-token budget requires a verified Free-plan hard stop and one transactional backend ledger.");
+  const timestamp = (name: string) => new Date(z.string().datetime().parse(requiredSetting(name)));
+  const verifiedAt = timestamp("APIFY_FREE_STOP_VERIFIED_AT");
+  const startsAt = timestamp("APIFY_VERIFIED_CYCLE_START");
+  const endsAt = timestamp("APIFY_VERIFIED_CYCLE_END");
+  const proofEndsAt = Math.min(endsAt.getTime(), verifiedAt.getTime() + 24 * 60 * 60_000);
+  invariant(verifiedAt.getTime() <= now && now - verifiedAt.getTime() <= 24 * 60 * 60_000 &&
+    startsAt.getTime() <= verifiedAt.getTime() && verifiedAt.getTime() < endsAt.getTime() &&
+    proofEndsAt > now + 15 * 60_000, 503, "budget_proof_stale", "The operator's Free-stop proof is missing, expired, or outside its reviewed billing cycle. Recheck the account's Free hard stop and update the dated proof before importing.");
+  const spentMicros = Number(requiredSetting("APIFY_VERIFIED_SPENT_MICROS"));
+  const capMicros = Number(requiredSetting("APIFY_PILOT_CAP_MICROS"));
+  invariant(Number.isSafeInteger(spentMicros) && spentMicros >= 0 && spentMicros < 5_000_000 &&
+    Number.isSafeInteger(capMicros) && capMicros > spentMicros && capMicros <= 1_000_000 &&
+    Number.isSafeInteger(reserveMicros) && reserveMicros > 0 && reserveMicros <= capMicros,
+  503, "budget_proof", "The explicitly reviewed pilot ledger must be bounded to USD 1 or less, including observed usage and each full job reservation.");
+  return {
+    month: startsAt.toISOString().slice(0, 7), spentMicros, capMicros, reserveMicros,
+    endsAt: new Date(proofEndsAt),
+    visibility: "verified-free-stop", verifiedAt: verifiedAt.toISOString()
+  };
+}
 
 export function approvedProvider(): { actor: string; build: string; reserveMicros: number; inputKey: string } {
   invariant(process.env["APIFY_ENABLED"] === "true"
@@ -46,7 +74,9 @@ export class ApifyProvider {
       signal: AbortSignal.timeout(20_000),
       redirect: "error"
     });
-    invariant(response.ok, 502, "provider_http", `Import provider returned HTTP ${response.status}.`);
+    if (!response.ok && !response.headers.get("content-type")?.includes("application/json")) {
+      throw new AppError(502, "provider_http", `Import provider returned HTTP ${response.status}.`);
+    }
     invariant(response.body, 502, "provider_response", "Import provider returned no response body.");
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
@@ -60,7 +90,12 @@ export class ApifyProvider {
         chunks.push(value);
       }
     } finally { await reader.cancel(); }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const result: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!response.ok) {
+      const failure = z.object({ error: z.object({ type: z.string().regex(/^[a-z0-9-]{1,100}$/) }) }).safeParse(result);
+      throw new AppError(502, "provider_http", `Import provider returned HTTP ${response.status}${failure.success ? ` (${failure.data.error.type})` : ""}.`);
+    }
+    return result;
   }
   async budget(): Promise<ProviderBudget> {
     const config = approvedProvider();
@@ -77,8 +112,16 @@ export class ApifyProvider {
     return {
       month: usage.usageCycle.startAt.slice(0, 7),
       spentMicros: Math.ceil(usage.totalUsageCreditsUsdAfterVolumeDiscount * 1_000_000),
-      endsAt, capMicros: 4_750_000, reserveMicros
+      endsAt, capMicros: 4_750_000, reserveMicros, visibility: "api-usage"
     };
+  }
+  protected async selectedBudget(reserveMicros: number): Promise<ProviderBudget> {
+    const mode = process.env["APIFY_BUDGET_MODE"] ?? "api-usage";
+    invariant(["api-usage", "verified-free-stop"].includes(mode), 503, "configuration", "Choose an explicit supported provider budget mode.");
+    if (mode === "verified-free-stop") return verifiedFreeStopBudget(reserveMicros);
+    invariant(process.env["APIFY_ACCOUNT_EXCLUSIVE"] === "true", 503, "budget_proof", "API-usage accounting requires verified account exclusivity.");
+    // Permission errors are never converted into an operator-attested budget.
+    return this.usageBudget(reserveMicros);
   }
   async start(sourceURL: string, reserveMicros: number): Promise<ProviderRun> {
     const config = approvedProvider();

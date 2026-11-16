@@ -20,9 +20,13 @@ export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResp
       const budget = await provider.preflightBudget();
       invariant(budget.spentMicros + budget.reserveMicros <= budget.capMicros,
         429, "budget_exhausted", "The shared allowance cannot cover this bounded proof.");
+      const actors = await provider.preflightAccess();
       return { status: 200, jsonBody: {
         ready: true, importsEnabled: process.env["APIFY_ENABLED"] === "true", reserveMicros: budget.reserveMicros,
-        spentMicros: budget.spentMicros, cycle: budget.month, endsAt: budget.endsAt.toISOString()
+        observedSpentMicros: budget.spentMicros, cycle: budget.month, endsAt: budget.endsAt.toISOString(),
+        ledgerCapMicros: budget.capMicros, usageVisibility: budget.visibility,
+        globalUsageVisible: budget.visibility === "api-usage", operatorProofAt: budget.verifiedAt ?? null,
+        readableActorRuns: actors
       }, headers };
     }
     const owner = await serializable(async transaction => {

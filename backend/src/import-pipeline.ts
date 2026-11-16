@@ -21,7 +21,7 @@ const stageActors = {
   model: "fayoussef~bulk-llm-runner"
 } as const;
 export function reviewedPipeline() {
-  invariant(["APIFY_FREE_PLAN_VERIFIED", "APIFY_NO_OVERAGES_VERIFIED", "APIFY_ACCOUNT_EXCLUSIVE",
+  invariant(["APIFY_FREE_PLAN_VERIFIED", "APIFY_NO_OVERAGES_VERIFIED", "APIFY_BACKEND_LEDGER_VERIFIED",
     "APIFY_PIPELINE_REVIEW_ACKNOWLEDGED", "APIFY_PIPELINE_PRICING_VERIFIED"].every(name => process.env[name] === "true"),
   503, "provider_not_approved", "Instagram imports are disabled until account limits and pricing are verified and the operator acknowledges the provider/data review.");
   const stages = Object.fromEntries(Object.keys(stageActors).map(key => {
@@ -41,8 +41,18 @@ export function approvedPipeline() {
   return reviewedPipeline();
 }
 export class ImportPipelineProvider extends ApifyProvider {
-  override async budget() { return this.usageBudget(approvedPipeline().reserveMicros); }
-  async preflightBudget() { return this.usageBudget(reviewedPipeline().reserveMicros); }
+  override async budget() { return this.selectedBudget(approvedPipeline().reserveMicros); }
+  async preflightBudget() { return this.selectedBudget(reviewedPipeline().reserveMicros); }
+  async preflightAccess(): Promise<string[]> {
+    const config = reviewedPipeline();
+    const accessible: string[] = [];
+    for (const stage of Object.values(config.stages)) {
+      z.object({ data: z.object({ items: z.array(z.object({ id: z.string() })).max(1) }) })
+        .parse(await this.request(`actors/${stage.actor}/runs?limit=1&desc=true`));
+      accessible.push(stage.actor);
+    }
+    return accessible;
+  }
   async startStage(sourceURL: string, pipeline: Pipeline, reservation: number): Promise<ProviderRun> {
     const config = approvedPipeline();
     invariant(pipeline.configuration === configuration(), 503, "provider_changed", "The reviewed provider configuration changed; no new stage was charged.");
