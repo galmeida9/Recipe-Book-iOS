@@ -372,31 +372,35 @@ struct AddToShoppingListSheet: View {
 
 // MARK: - Editor
 
-/// Read-only, selectable source text captured from an imported Reel. Nothing here is copied into
-/// the recipe automatically.
+/// Read-only, selectable source text captured from an imported Reel, at the bottom of the editor.
+/// Collapsed to a short preview; the full text is one tap away. Nothing is copied into the recipe.
 @MainActor
 struct SourceEvidenceSection: View {
     let text: String
     @State private var expanded = false
 
-    private var isLong: Bool { text.count > 400 }
+    private var isLong: Bool { text.count > 160 || text.filter(\.isNewline).count > 2 }
 
     var body: some View {
         Section {
             Text(text)
-                .font(.callout)
-                .lineLimit(expanded || !isLong ? nil : 8)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(expanded || !isLong ? nil : 3)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("Source text: \(text)")
             if isLong {
-                Button(expanded ? "Show Less" : "Show All") { expanded.toggle() }
-                    .accessibilityHint(expanded ? "Collapses the source text" : "Shows the full source text")
+                Button(expanded ? "Show Less" : "Show All") {
+                    withAnimation(.snappy) { expanded.toggle() }
+                }
+                .font(.footnote.weight(.semibold))
+                .accessibilityHint(expanded ? "Collapses the source text" : "Shows the full source text")
             }
         } header: {
             Label("Source evidence", systemImage: "text.quote")
         } footer: {
-            Text("Caption, comments or transcript from the Reel. Select and copy what you need; amounts aren’t filled in for you.")
+            Text("Caption, comments or transcript from the Reel. Amounts aren’t filled in for you.")
         }
     }
 }
@@ -460,10 +464,6 @@ struct RecipeEditorView: View {
                 } footer: {
                     if books.isEmpty { Text("Create a book in the Library first.") }
                 }
-            }
-
-            if let evidence = draft.evidenceText?.trimmingCharacters(in: .whitespacesAndNewlines), !evidence.isEmpty {
-                SourceEvidenceSection(text: evidence)
             }
 
             coverSection
@@ -557,6 +557,9 @@ struct RecipeEditorView: View {
                 }
             } footer: {
                 Text("Tap Edit to drag steps into a new order, or touch and hold a step to move it up or down.")
+            }
+            if let evidence = draft.evidenceText?.trimmingCharacters(in: .whitespacesAndNewlines), !evidence.isEmpty {
+                SourceEvidenceSection(text: evidence)
             }
         }
         .navigationTitle(title)
