@@ -227,7 +227,7 @@ export class ImportService {
       invariant(row.state === "failed" && row.pipelineData, 409, "retry_unsafe", "This import has no retained review result.");
       const pipeline = pipelineSchema.parse(JSON.parse(row.pipelineData));
       invariant(pipeline.evidence?.transcript, 409, "retry_unsafe", "Cached transcript evidence is unavailable.");
-      const model = z.object({ model: z.string().max(100), requestId: z.string().max(200), inputTokens: z.number().int().nonnegative(),
+      const model = z.object({ model: z.literal("gpt-4.1-mini-2025-04-14"), requestId: z.string().max(200), inputTokens: z.number().int().nonnegative(),
         outputTokens: z.number().int().nonnegative(), response: z.string().max(400_000) }).parse(JSON.parse(row.modelResultJson));
       const sources = extractionInput(row.sourceURL, pipeline.evidence).evidence;
       const reviewed = validateExtraction(JSON.parse(model.response), row.sourceURL, sources);

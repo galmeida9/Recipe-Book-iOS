@@ -510,7 +510,8 @@ actor UIServiceAdapter: RecipeBookPresentation.RecipeBookService {
         }
         return RecipeBookPresentation.ImportJob(id: string(value.id), sourceURL: value.sourceURL, status: status, createdAt: date,
             titleHint: value.draft?.title, bookID: value.destinationBookId.map(string), stageDetail: stageText,
-            thumbnail: value.draft?.coverImageID.map { ImageRef(id: string($0)) }, isUnseen: value.isUnseen ?? false)
+            thumbnail: value.draft?.coverImageID.map { ImageRef(id: string($0)) }, isUnseen: value.isUnseen ?? false,
+            retryReason: value.retryReason)
     }
     private static func fractionalDate(_ text: String) -> Date? {
         let formatter = ISO8601DateFormatter()
