@@ -142,6 +142,15 @@ test("no silent caption-only fallback when audio is missing or belongs to a diff
   const provider = new ImportPipelineProvider(async () => Response.json([{ url: "https://www.instagram.com/reel/other/", segments: [] }]));
   await assert.rejects(() => provider.completeStage(run, url, pipeline));
 });
+test("missing caption still advances to real audio, while unrelated/identity-bearing comments are not retained", async () => {
+  configure();
+  const provider = new ImportPipelineProvider(async () => Response.json([{ url, caption: null,
+    latestComments: [{ text: "Contact @spam for a cure" }, { text: "Amazing!" }, { text: "Boil for 10 minutes" }] }]));
+  const result = await provider.completeStage(run, url, initialPipeline());
+  assert.equal(result.next?.stage, "audio");
+  assert.equal(result.evidence.caption, null);
+  assert.deepEqual(result.evidence.comments, ["Boil for 10 minutes"]);
+});
 test("actual restricted-token Standby denial is surfaced without another model call or caption-only recipe", async () => {
   configure();
   let requests = 0;

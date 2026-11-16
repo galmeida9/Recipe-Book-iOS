@@ -8,7 +8,6 @@ import RecipeBookAuth
 struct RecipeBookApp: App {
     private let service: Result<any RecipeBookPresentation.RecipeBookService, Error>
     private let installationCheck: Bool
-    @Environment(\.scenePhase) private var scenePhase
     @State private var incomingReel: URL?
     @State private var inboxError: String?
     @State private var sharedInboxUnavailable = false
@@ -72,10 +71,6 @@ struct RecipeBookApp: App {
             case .ignored: break
             }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active, !installationCheck, AppConfiguration.importsEnabled { loadInbox() }
-        }
-        .task { if !installationCheck, AppConfiguration.importsEnabled { loadInbox() } }
         .alert("Unable to read shared Reel", isPresented: Binding(get: { inboxError != nil }, set: { if !$0 { inboxError = nil } })) {
             Button("OK") { inboxError = nil }
         } message: { Text(inboxError ?? "") }

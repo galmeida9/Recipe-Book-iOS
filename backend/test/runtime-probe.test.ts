@@ -4,6 +4,7 @@ import { HttpRequest } from "@azure/functions";
 import { importRuntimeProbe } from "../src/bootstrap.js";
 import { ImportService } from "../src/imports.js";
 import { RecipeBookService } from "../src/service.js";
+import { dispatch } from "../src/functions.js";
 
 test("runtime workload proof is unavailable by default, including charged POST attempts", async () => {
   delete process.env["IMPORT_RUNTIME_PROBE_ENABLED"];
@@ -12,6 +13,15 @@ test("runtime workload proof is unavailable by default, including charged POST a
     assert.equal(response.status, 404);
     assert.deepEqual(response.jsonBody, { code: "probe_disabled", message: "Runtime probe is disabled." });
   }
+});
+test("authenticated import capability route exposes dated pilot limits without routing through shopping or UUID parsing", async t => {
+  const capability = { enabled: false, budgetMode: "verified-free-stop", globalUsageVisible: false,
+    pilotExpiresAt: "2026-11-17T20:34:00.000Z", reservationMicros: 80_000, availablePilotMicros: 730_000 };
+  t.mock.method(ImportService.prototype, "capabilities", async () => capability);
+  const response = await dispatch(new HttpRequest({ method: "GET", url: "https://probe.invalid/api/imports/capabilities",
+    params: { path: "imports/capabilities" } }), new RecipeBookService({ issuer: "https://probe.invalid", subject: "synthetic" }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.jsonBody, capability);
 });
 test("operator runtime dispatch cannot accidentally enable ordinary customer creates or retries", async () => {
   process.env["APIFY_ENABLED"] = "true";

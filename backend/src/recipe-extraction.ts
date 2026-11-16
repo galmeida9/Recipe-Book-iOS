@@ -41,6 +41,12 @@ Preserve exact source_url. requires_review is ALWAYS true; user must edit/review
 Units allowed: g,kg,ml,l,oz,lb,cup,tsp,tbsp,piece or null. No invented meal classification.
 Warn about all unknown or conflicting material facts, including missing servings and total time.`;
 
+export function relevantRecipeComments(comments: string[]): string[] {
+  return comments.slice(0, 20).filter(comment =>
+    !/\b(?:ignore|system|prompt|instructions?|subscribe|follow|discount|buy now)\b|\breview\s*[:=]|https?:\/\/|www\.|@/i.test(comment) &&
+    /\b(?:ingredients?|minutes?|grams?|cups?|tablespoons?|teaspoons?|bake|boil|mix|refrigerat|freez)/i.test(comment));
+}
+
 export function extractionInput(sourceURL: string, evidence: Evidence): { source_url: string; evidence: ExtractionSource[] } {
   const sources: ExtractionSource[] = [];
   const append = (kind: ExtractionSource["kind"], prefix: string, text: string | null) => {
@@ -62,11 +68,10 @@ export function extractionInput(sourceURL: string, evidence: Evidence): { source
   }
   append("caption", "C", caption);
   append("transcript", "T", evidence.transcript);
-  for (const comment of evidence.comments.slice(0, 20)) {
+  for (const comment of relevantRecipeComments(evidence.comments)) {
     // Commenter identity/links are not inference inputs; only cooking-bearing
     // public comments survive. This filter is not a prompt-injection guarantee.
-    if (/\b(?:ignore|system|prompt|instructions?|subscribe|follow|discount|buy now)\b|\breview\s*[:=]|https?:\/\/|www\.|@/i.test(comment)) continue;
-    if (/\b(?:ingredients?|minutes?|grams?|cups?|tablespoons?|teaspoons?|bake|boil|mix|refrigerat|freez)/i.test(comment)) append("comment", "M", comment);
+    append("comment", "M", comment);
   }
   const parsed = sourcesSchema.parse(sources);
   invariant(JSON.stringify(parsed).length <= 48_000, 422, "evidence_limit", "Recipe evidence exceeds the extraction input limit.");

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { ApifyProvider, runSchema, type ProviderRun } from "./apify.js";
 import { canonicalReelURL, invariant, requiredSetting, type Evidence } from "./contracts.js";
 import { evidenceSchema } from "./import-evidence.js";
-import { extractionInput, extractionJSONSchema, extractionRules, validateExtraction } from "./recipe-extraction.js";
+import { extractionInput, extractionJSONSchema, extractionRules, relevantRecipeComments, validateExtraction } from "./recipe-extraction.js";
 import { approvedGemini, GeminiExtractor } from "./gemini.js";
 import { approvedAzureModel, AzureRecipeExtractor } from "./azure-extraction.js";
 
@@ -130,6 +130,7 @@ export class ImportPipelineProvider extends ApifyProvider {
       const evidence = evidenceSchema.parse({
         caption: metadata.caption ?? null, transcript: null, comments: (metadata.latestComments ?? []).slice(0, 20).map(comment => comment.text)
       });
+      evidence.comments = relevantRecipeComments(evidence.comments);
       return { next: { ...pipeline, stage: "audio", evidence, thumbnailURL: metadata.displayUrl ?? null }, evidence, review: null };
     }
     invariant(pipeline.evidence, 502, "evidence_missing", "The prior stage's evidence is missing.");

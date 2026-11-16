@@ -19,6 +19,10 @@ on:
         required: false
         type: string
         default: ''
+      imports_enabled:
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -33,6 +37,7 @@ jobs:
       DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
       PACKAGE_MODE: ${{ inputs.package_mode }}
       TRIAL_API_URL: ${{ inputs.api_url }}
+      TRIAL_IMPORTS_ENABLED: ${{ inputs.imports_enabled }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify existing private draft and exact source before building
@@ -60,13 +65,19 @@ jobs:
           xcodebuild -version
           CHECK=YES
           if [ "$PACKAGE_MODE" = core-trial ]; then CHECK=NO; fi
-          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO "RECIPEBOOK_INSTALLATION_CHECK=$CHECK" "RECIPEBOOK_API_URL=$TRIAL_API_URL" build
+          IMPORTS=NO
+          if [ "$TRIAL_IMPORTS_ENABLED" = true ]; then
+            test "$PACKAGE_MODE" = core-trial
+            IMPORTS=YES
+          fi
+          xcodebuild -project ios/RecipeBook.xcodeproj -scheme RecipeBook -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO "RECIPEBOOK_INSTALLATION_CHECK=$CHECK" "RECIPEBOOK_API_URL=$TRIAL_API_URL" "RECIPEBOOK_IMPORTS_ENABLED=$IMPORTS" build
           APP=build/Build/Products/Debug-iphoneos/RecipeBook.app
           test -f "$APP/RecipeBook"
           test -f "$APP/PlugIns/RecipeBookShare.appex/RecipeBookShare"
           test -f "$APP/Assets.car"
           test -d "$APP/RecipeBookUI_RecipeBookUI.bundle"
           test "$(plutil -extract RecipeBookInstallationCheck raw -o - "$APP/Info.plist")" = "$CHECK"
+          test "$(plutil -extract RecipeBookImportsEnabled raw -o - "$APP/Info.plist")" = "$IMPORTS"
           python3 <<'PY'
           import pathlib, plistlib
           for target in ("RecipeBook", "RecipeBookShare"):

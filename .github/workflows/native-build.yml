@@ -41,6 +41,11 @@ on:
         required: false
         type: string
         default: ''
+      trial_imports_enabled:
+        description: 'Enable the verified live Instagram trial; requires the actual backend/provider proof'
+        required: true
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -127,3 +132,4 @@ jobs:
       draft_release_id: ${{ inputs.installation_check_draft_id }}
       package_mode: ${{ inputs.trial_api_url != '' && 'core-trial' || 'installation-check' }}
       api_url: ${{ inputs.trial_api_url }}
+      imports_enabled: ${{ inputs.trial_imports_enabled }}

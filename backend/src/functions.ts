@@ -122,6 +122,8 @@ export async function dispatch(request: HttpRequest, service: RecipeBookService,
         }
         result = job;
       }
+    } else if (path.length === 2 && path[1] === "capabilities" && method === "GET") {
+      result = await imports.capabilities();
     } else if (path.length === 2) {
       if (method === "GET") result = await imports.get(id(1));
       else if (method === "DELETE") result = await imports.discard(id(1), version());

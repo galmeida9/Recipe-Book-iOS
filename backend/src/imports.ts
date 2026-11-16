@@ -89,6 +89,22 @@ export class ImportService {
       : process.env["APIFY_CUSTOMER_IMPORTS_ENABLED"] === "true",
     503, "imports_not_enabled", "Instagram importing is not enabled for customer requests yet.");
   }
+  async capabilities() {
+    const budget = await this.provider.preflightBudget();
+    return this.service.execute(async (transaction) => {
+      const current = (await query<{ spent: number; reserved: number; cap: number }>(transaction,
+        "SELECT SpentMicros AS spent,ReservedMicros AS reserved,CapMicros AS cap FROM dbo.ImportBudget WHERE Month=@month",
+        { month: budget.month }))[0];
+      const available = Math.max(0, Math.min(budget.capMicros, current?.cap ?? budget.capMicros) -
+        Math.max(budget.spentMicros, current?.spent ?? 0) - (current?.reserved ?? 0));
+      return {
+        enabled: process.env["APIFY_ENABLED"] === "true" && process.env["APIFY_CUSTOMER_IMPORTS_ENABLED"] === "true" && available >= budget.reserveMicros,
+        budgetMode: budget.visibility, globalUsageVisible: budget.visibility === "api-usage",
+        pilotExpiresAt: budget.endsAt.toISOString(), operatorProofAt: budget.verifiedAt ?? null,
+        reservationMicros: budget.reserveMicros, availablePilotMicros: available
+      };
+    });
+  }
   list(bookId?: string) {
     return this.service.execute(async (transaction, userId) => {
       await expireUndelivered(transaction, userId);

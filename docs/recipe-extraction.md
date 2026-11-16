@@ -12,9 +12,33 @@ The pipeline uses one public video only:
 2. `apple_yang/instagram-transcripts-scraper`: actual audio recognition segments,
    with enhanced crawling and profile/bulk crawling disabled. Missing audio is
    an explicit failure, not a caption-only success.
-3. `fayoussef/bulk-llm-runner`: one `google/gemini-2.5-flash-lite` request with the
-   reviewed extraction rules in both prompt and system message. No web/file
-   tools, comparison/fallback models, spreadsheets or automatic retries.
+3. Direct Azure OpenAI `gpt-4.1-mini`, version `2025-04-14`, through the workload
+   managed identity and strict JSON output. No API key, web/file tools,
+   comparison/fallback models, spreadsheets or automatic retries.
+
+The original Apify relay returned a real
+`actor-restricted-access-permission-mode-not-supported` denial from its Standby
+gateway. Its previous Flash Lite benchmark is not proof of this different
+Azure model. No restricted-token boundary was bypassed to make the relay work.
+
+`MODEL_PROVIDER=azure-credits` selects the direct route. It requires
+`AZURE_MODEL_CREDITS_VERIFIED`, `AZURE_MODEL_SPENDING_LIMIT_VERIFIED` and
+`AZURE_MODEL_DEPLOYMENT_VERIFIED`, with the owned `AZURE_OPENAI_ENDPOINT`,
+`AZURE_OPENAI_DEPLOYMENT` and `AZURE_MODEL_RUN_CAP_MICROS=50000`.
+Each request is at most 24,000 UTF-8 bytes and 6,000 output tokens. Microsoft
+retail Consumption meters were USD 0.0004/1K input and USD 0.0016/1K output.
+A conservative byte-as-token upper bound plus protocol headroom fits the
+USD 0.05 reservation. No charged POST is automatically retried.
+
+The owned S0 account disables local/API-key authentication. Its deployment
+is GlobalStandard token consumption, capacity 10, not PTU/reserved hosting,
+fine-tuning, GPU or Marketplace billing. Capacity is a rate allowance, not a
+fixed throughput purchase. After provider registration, actual quota was
+200 units for regular GlobalStandard GPT-4.1 Mini; ARM validation and deployment
+succeeded. Nano's zero quota and the retired 4o Mini SKU were not bypassed.
+Visual Studio credits [explicitly cover Azure OpenAI subject to access and
+availability](https://learn.microsoft.com/en-us/visualstudio/subscriptions/vs-azure-eligibility);
+subscription `spendingLimit=On` remains mandatory.
 
 Only caption, relevant public comment text and transcription text go to
 inference. Commenter identity, video runtime and ASR timing offsets are not
@@ -40,24 +64,27 @@ permanent regression case; a model warning alone does not resolve a quantity.
 
 Production remains off by default. Before enabling, verify the actual shared
 account's Free allowance, no automatic paid upgrades/overages, account
-exclusivity, each actor's charging model/build, and data-processing terms.
+budget mode, each actor's charging model/build, and data-processing terms.
 `maxTotalChargeUsd` is only a billing safeguard for a compatible charging model;
 setting a request option does not establish that compatibility.
 
-Require `APIFY_ENABLED`, `APIFY_FREE_PLAN_VERIFIED`,
-`APIFY_NO_OVERAGES_VERIFIED`, `APIFY_ACCOUNT_EXCLUSIVE`,
+Require `APIFY_ENABLED`, `APIFY_CUSTOMER_IMPORTS_ENABLED`,
+`APIFY_FREE_PLAN_VERIFIED`, `APIFY_NO_OVERAGES_VERIFIED`, `APIFY_BACKEND_LEDGER_VERIFIED`,
 `APIFY_PIPELINE_REVIEW_ACKNOWLEDGED` and `APIFY_PIPELINE_PRICING_VERIFIED`, all explicitly
-`true`. For each of `METADATA`, `AUDIO`, `MODEL`, configure
+`true`. For each of `METADATA`, `AUDIO`, configure
 `APIFY_<STAGE>_BUILD` as a reviewed numeric build and
 `APIFY_<STAGE>_CAP_MICROS` as a positive hard cap. Their **sum** (maximum USD 1)
-is reserved before any charged request; the USD 4.75 shared-cycle limit includes
-in-flight reservations, leaving USD 0.25 headroom. Unknown outcomes consume the
-entire reservation, and no new charged POST is retried.
+plus the Azure model cap is reserved before any charged request. The reviewed
+pilot uses USD 0.01 metadata + USD 0.02 audio + USD 0.05 model = USD 0.08.
+Unknown outcomes consume the entire reservation; no new charged POST is retried.
+The explicit shared-account pilot below is not global live-usage accounting.
 
 The runtime `APIFY_TOKEN` comes only from the private vault reference populated
 through a masked operator prompt. Never use MCP credentials or place tokens in
-source, the phone bundle, CI logs or chat. No Azure/OpenAI resource or separate
-OpenRouter billing account is needed for this candidate.
+source, the phone bundle, CI logs or chat. Azure model access uses the workload
+identity, not this token. No Google API key or OpenRouter billing account is
+required by the selected Azure route. The unused direct-Gemini adapter is not
+selected or an automatic fallback.
 
 ### Explicit restricted-token budget mode
 
@@ -91,9 +118,21 @@ changes stop further charging against its existing reservation. Expiry,
 revocation, unknown POST outcomes, invalid evidence or rejected output stop the
 pipeline visibly. No fixture or regex-only draft is substituted.
 
-The pipeline and validator tests use synthetic responses without provider
-charges. They are not live production proof; activation still requires the
-account/secret/build/cap checks above and a separately authorized end-to-end run.
+The unit tests use synthetic responses without provider charges. Separately,
+the real staged run completed metadata and audio, then hit the relay denial.
+An immutable model-only recovery journal reused that persisted evidence and
+actually reached `review` via workload-identity Azure inference: seven
+ingredients, exact fractions, six ordered method steps including all chilling
+durations and "Serve chilled", unknown servings/total time, valid citations and
+a private downloaded cover. The old failed journal and full USD 0.08 settlement
+were preserved. The separate recovery also settled its full USD 0.08 reservation;
+it did not rescrape or retranscribe.
+
+Actual Azure usage was 1,479 input and 563 output tokens, an estimated
+**model-only** USD 0.0014924 at the reviewed retail rates. This is not a complete
+Apify/platform/Blob invoice or general recipe reliability proof. Physical
+share-sheet authentication, book selection, dismissal, background progress and
+review/save still require the matching signed iPhone build and device checks.
 
 ### Runtime review on 2026-11-16
 
@@ -104,7 +143,7 @@ numeric builds (not an instruction to enable them without the remaining gates):
 | --- | --- | --- | --- |
 | Metadata | `xMc5Ga1oCONPmWJIa` | `0.0.653` | 128 MiB |
 | Audio | `S9A11NvceWaGorwwh` | `0.0.83` | 512 MiB |
-| Model | `0pArcqOZFSjoCBlJX` | `0.1.65` | 256 MiB |
+| Historical failed relay (not selected) | `0pArcqOZFSjoCBlJX` | `0.1.65` | 256 MiB |
 
 The corresponding build IDs are `JRCDaeR2IqpWXAu2u`,
 `dVBUTLy3gVk9PVtTq` and `WzI4lP7dqm8NOC3Q5`. Evidence comes from the

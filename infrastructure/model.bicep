@@ -3,14 +3,6 @@ targetScope = 'resourceGroup'
 param location string = 'swedencentral'
 param accountName string
 param workloadPrincipalId string
-@allowed(['Standard', 'DataZoneStandard', 'GlobalStandard'])
-param deploymentSku string = 'DataZoneStandard'
-@allowed(['gpt-4.1-nano', 'gpt-4.1-mini', 'gpt-4o-mini'])
-param modelName string = 'gpt-4.1-nano'
-param modelVersion string = '2025-04-14'
-@minValue(1)
-@maxValue(10)
-param capacity int = 1
 
 resource modelAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   name: accountName
@@ -28,9 +20,9 @@ resource modelAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
 resource extractor 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
   parent: modelAccount
   name: 'recipe-extractor'
-  sku: { name: deploymentSku, capacity: capacity }
+  sku: { name: 'GlobalStandard', capacity: 10 }
   properties: {
-    model: { format: 'OpenAI', name: modelName, version: modelVersion }
+    model: { format: 'OpenAI', name: 'gpt-4.1-mini', version: '2025-04-14' }
     versionUpgradeOption: 'NoAutoUpgrade'
   }
 }

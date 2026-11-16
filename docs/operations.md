@@ -369,13 +369,13 @@ membership. Temporary single-IP SQL and SCM operator rules were removed.
 
 ## Import provider approval and cost safety
 
-Imports are **disabled by default**. The implemented candidate is staged
-metadata, actual audio transcription, then Gemini 2.5 Flash Lite extraction via
-reviewed Apify actors. The coordinator's small authorized live benchmark is not
-production-app proof. Runtime secret, current account hard stops, pinned builds,
-pricing compatibility and data terms remain activation gates.
-Apify MCP is not a runtime dependency. See [the extraction contract and
-activation checklist](recipe-extraction.md). Missing audio fails visibly.
+Imports are **disabled by default**. The selected route is pinned Apify metadata
+and real audio transcription, then managed-identity Azure GPT-4.1 Mini structured
+extraction. The restricted-token Apify model relay actually failed; it was not
+silently granted full access. A separate immutable recovery of the cached audio
+actually produced a validated editable draft, with the old failed charge history
+preserved. See [the full evidence and activation checklist](recipe-extraction.md).
+Apify MCP is not a runtime dependency; missing audio fails visibly.
 
 Server-only settings:
 
@@ -384,12 +384,14 @@ Server-only settings:
 | `APIFY_ENABLED` | Explicit `true` only after review |
 | `APIFY_FREE_PLAN_VERIFIED` | Verified shared USD 5 allowance |
 | `APIFY_NO_OVERAGES_VERIFIED` | Free-plan spending/overage limit remains enabled |
-| `APIFY_ACCOUNT_EXCLUSIVE` | No independent charged jobs outside this backend budget |
+| `APIFY_BACKEND_LEDGER_VERIFIED` | Every app import uses this transactional budget ledger |
+| `APIFY_ACCOUNT_EXCLUSIVE` | `false` for the shared account; API-usage mode alone requires exclusivity |
 | `APIFY_TOKEN` | Key Vault reference, never app/repo/chat |
 | `APIFY_PIPELINE_REVIEW_ACKNOWLEDGED` | Operator acknowledges provider/data/terms assessment; not verified legal status or a published exception |
 | `APIFY_PIPELINE_PRICING_VERIFIED` | Actual charging-model/hard-cap compatibility for all three actors |
-| `APIFY_METADATA_BUILD`, `APIFY_AUDIO_BUILD`, `APIFY_MODEL_BUILD` | Reviewed pinned numeric builds |
-| `APIFY_METADATA_CAP_MICROS`, `APIFY_AUDIO_CAP_MICROS`, `APIFY_MODEL_CAP_MICROS` | Per-stage hard caps; total at most USD 1 |
+| `APIFY_METADATA_BUILD`, `APIFY_AUDIO_BUILD` | Reviewed pinned numeric builds |
+| `APIFY_METADATA_CAP_MICROS`, `APIFY_AUDIO_CAP_MICROS` | Per-stage hard caps plus the separately reserved Azure model cap |
+| `APIFY_CUSTOMER_IMPORTS_ENABLED` | Explicit customer admission, separate from operator-only worker proof |
 
 Each stage sends `maxTotalChargeUsd`, `maxItems=1`, timeout 180 seconds, no
 restarts and limited permissions. Billing options are not universal work limits:
@@ -428,6 +430,29 @@ amounts/servings remain null, not guessed. Approval saves to an explicitly chose
 accessible book and retains the canonical original Instagram link.
 
 ## Required device gate
+
+The Instagram pilot is not permanent availability: the dated shared-Free-stop
+proof expires **2026-11-17 20:34 UTC**, with a USD 1 conservative ledger ceiling
+including the USD 0.11 observed usage and full job reservations. After the two
+workload journals, USD 0.27 was conservatively spent and none reserved; this is
+not the actual global provider invoice. `/imports/capabilities` (authenticated)
+exposes actual enabled state, available pilot headroom, per-job reservation,
+expiry and `globalUsageVisible=false`. Stale proof and exhaustion fail visibly,
+never through a paid fallback. Removing daily manual proof renewal requires a
+separately reviewed sustainable operator/plan-change protocol, not an invented
+usage permission or automatic renewal without observation.
+
+Migration `008-book-imports.sql` persists destination book and review-seen
+version. New customer submissions require `bookId`; account/book/source derive
+one stable app/extension idempotency key. Access is checked on submit, worker
+dispatch, reads and save. Queue acknowledgement is required before the share
+extension completes. Seen acknowledgement is server-persisted and idempotent.
+The new extension uses AppAuthCore and the authorized App Group as an explicit
+Keychain access group (`WhenUnlockedThisDeviceOnly`), not a plaintext shared
+OAuth file. Open the updated main app once to restore/refresh the existing Google
+session and export it to this protected group before the first Instagram share.
+If SideStore/iOS does not authorize the group, the app or share sheet reports
+that failure; metadata packaging alone does not grant authorization.
 
 The optional `IMPORT_RUNTIME_PROBE_ENABLED=true` workload proof is registered
 only as an Azure Functions **admin-key** endpoint at `_bootstrap/import`.
