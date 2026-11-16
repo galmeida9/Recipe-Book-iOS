@@ -69,3 +69,44 @@ pipeline visibly. No fixture or regex-only draft is substituted.
 The pipeline and validator tests use synthetic responses without provider
 charges. They are not live production proof; activation still requires the
 account/secret/build/cap checks above and a separately authorized end-to-end run.
+
+### Runtime review on 2026-11-16
+
+Read-only public actor/build metadata identified the following successful
+numeric builds (not an instruction to enable them without the remaining gates):
+
+| Stage | Actor ID | Build | Minimum memory |
+| --- | --- | --- | --- |
+| Metadata | `xMc5Ga1oCONPmWJIa` | `0.0.653` | 128 MiB |
+| Audio | `S9A11NvceWaGorwwh` | `0.0.83` | 512 MiB |
+| Model | `0pArcqOZFSjoCBlJX` | `0.1.65` | 256 MiB |
+
+The audio stage requests 512 MiB; a generic 256-MiB request is incompatible with
+the reviewed build. The model actor's published Free-plan policy charges model
+usage at **ten times** standard token rates, in addition to its USD 0.002/result
+event and platform usage. Earlier benchmark model-only amounts are not complete
+runtime prices. No nested run was identified in the existing benchmark log;
+the README's phrase "openrouter actor" alone does not establish a dependency.
+Start with only the three reviewed actors. If a real permission failure reveals
+a nested dependency, identify and review it before expanding scope; do not assume
+an outer run's requested cap covers independently billed children.
+
+Scoped runtime tokens must use **Restricted access**, permit only the reviewed
+actor executions and necessary usage reads, and allow access to default storages
+of triggered runs. The restriction is transitive to nested actors. Do not select
+full actor access or broad account-wide actor execution merely to avoid finding
+the actual dependency. See [scoped token execution](https://docs.apify.com/integrations/api#actor-execution).
+
+The [current General Terms](https://docs.apify.com/legal/general-terms-and-conditions)
+(effective 2026-07-09) state that Services are intended for business use only and
+not suitable for consumers. The document does not establish whether this
+project's development use qualifies. A logged-in Free account alone proves
+neither eligibility nor ineligibility; obtain applicable account-agreement or
+provider clarification without requesting personal legal status. Do not set the
+terms-verification flag while this remains unresolved. Under
+[Actor Terms sections 4 and 9](https://docs.apify.com/legal/actor-terms-and-conditions),
+community creators can access inputs/outputs and are not Apify DPA
+subprocessors. The model actor additionally forwards prompts to the selected
+model provider. No zero-retention or no-training guarantee has been established
+for this community-actor chain. Only authorized public recipe evidence may be
+sent; private app recipes, credentials and commenter identity must not be sent.

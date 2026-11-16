@@ -63,7 +63,7 @@ export class ImportPipelineProvider extends ApifyProvider {
       };
     }
     const parameters = new URLSearchParams({
-      build: stage.build, timeout: "180", memory: "256", maxItems: "1",
+      build: stage.build, timeout: "180", memory: pipeline.stage === "audio" ? "512" : "256", maxItems: "1",
       maxTotalChargeUsd: (stage.cap / 1_000_000).toFixed(6), restartOnError: "false",
       forcePermissionLevel: "LIMITED_PERMISSIONS"
     });

@@ -34,6 +34,7 @@ test("each stage pins actual actor/build/cap and disables expensive optional wor
     assert.equal(request.searchParams.get("forcePermissionLevel"), "LIMITED_PERMISSIONS");
     assert.equal(request.searchParams.get("maxItems"), "1");
     const stage = stages[index++]!;
+    assert.equal(request.searchParams.get("memory"), stage === "audio" ? "512" : "256");
     if (stage === "metadata") {
       assert(request.pathname.includes("apify~instagram-reel-scraper"));
       assert.equal(request.searchParams.get("build"), "1.2.3");
