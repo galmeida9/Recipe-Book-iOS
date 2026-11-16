@@ -460,9 +460,28 @@ while the Library's legacy unbound-import cards displayed operator test data
 with relative wall-clock time. Global import cards/timers are now removed.
 Book acknowledgements upsert immediately; visible per-book polling preserves
 cached content and cancels on navigation. App API requests have 20/30-second
-request/resource bounds, AppAuth 15/20-second bounds, and shared Keychain
+request/resource bounds, and shared Keychain
 coordination uses a nonblocking OS file lock rather than a potentially
 MainActor-blocking file-coordination wait.
+
+The initial 15/20-second global AppAuth clock caused a subsequent sign-in
+transport regression risk. Authentication is now separate from CRUD: retained
+main-app discovery/token sessions have asynchronous 90/120-second request/resource
+bounds, while share-extension token refresh stays at 20/25 seconds. Timeouts,
+cancellation, TLS errors and OAuth grant errors are distinguished without
+displaying request URLs, codes, PKCE values or tokens. Transport failure does
+not erase an existing stored account session. A successful private Google login
+with an unavailable shared Keychain shows a separate sharing warning rather than
+misreporting the Google exchange as failed; no plaintext credential fallback is
+used.
+
+The official Google server SDK normally retries token POSTs on transient errors.
+The broker overrides that behavior: a single 30-second bounded Google request,
+no automatic POST replay, and the original transactional one-use PKCE/nonce
+claim remains enforced. Safe phase-only telemetry records token receipt,
+claim/exchange progress and duration, never input values or credentials.
+Real-phone sign-in still requires confirmation; a quick invalid-grant response
+for an inert test code is routing/SQL-claim evidence, not successful login.
 
 `009-import-visibility.sql` distinguishes operator-only proof jobs and superseded
 failures without deleting their audit/charge history. It also retains completed

@@ -68,8 +68,25 @@ export interface OAuthDiagnostic {
   outcome?: string;
 }
 export class GoogleOAuthProvider implements OAuthProvider {
-  constructor(private readonly clientID: string, private readonly secret: string, private readonly callback: string) {}
-  private client() { return new OAuth2Client(this.clientID, this.secret, this.callback); }
+  constructor(private readonly clientID: string, private readonly secret: string, private readonly callback: string,
+    private readonly transport?: typeof fetch) {}
+  private client() {
+    const client = new OAuth2Client({
+      clientId: this.clientID, clientSecret: this.secret, redirectUri: this.callback,
+      transporterOptions: { timeout: 30_000, ...(this.transport ? { fetchImplementation: this.transport } : {}) }
+    });
+    // The SDK otherwise opts token POSTs into transient-error retries. A
+    // one-use Google code with an unknown outcome must never be replayed.
+    client.transporter.interceptors.request.add({
+      resolved: async options => {
+        options.timeout = 30_000;
+        options.retry = false;
+        options.retryConfig = { retry: 0, noResponseRetries: 0 };
+        return options;
+      }
+    });
+    return client;
+  }
   authorize(state: string, nonce: string, challenge: string) {
     return this.client().generateAuthUrl({ scope: ["openid", "profile", "email"], response_type: "code",
       state, nonce, code_challenge: challenge, code_challenge_method: CodeChallengeMethod.S256,

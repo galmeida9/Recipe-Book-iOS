@@ -91,6 +91,17 @@ test("official provider URL exposes only standard public authorization parameter
   assert.equal(url.searchParams.get("nonce"), nonce);
   assert.equal(url.searchParams.get("client_secret"), null);
 });
+test("the actual Google SDK makes one bounded token POST on 503 instead of replaying the one-use code", async () => {
+  let requests = 0;
+  const provider = new GoogleOAuthProvider(clientID, "synthetic-server-only-secret",
+    "https://fixture.invalid/api/auth/google/callback", async input => {
+      requests++;
+      assert.equal(String(input), "https://oauth2.googleapis.com/token");
+      return Response.json({ error: "temporarily_unavailable" }, { status: 503 });
+    });
+  await assert.rejects(() => provider.exchange("synthetic-inert-code", verifier));
+  assert.equal(requests, 1);
+});
 test("slow provider exchange remains single-use and records only non-sensitive phases", async () => {
   const flows = new FlowFixture();
   const diagnostics: unknown[] = [];
