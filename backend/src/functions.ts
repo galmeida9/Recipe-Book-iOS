@@ -9,6 +9,8 @@ import { readRecipeImage, uploadRecipeImage } from "./images.js";
 import { oauthRoute } from "./oauth.js";
 import { PlannerService } from "./planner-service.js";
 import { weekStartSchema } from "./planner.js";
+import { reviewedPipeline } from "./import-pipeline.js";
+import { verifiedFreeStopBudget } from "./apify.js";
 import "./bootstrap.js";
 
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
@@ -153,6 +155,15 @@ export async function dispatch(request: HttpRequest, service: RecipeBookService,
 
 export async function api(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   try {
+    if (request.method === "GET" && request.params["path"] === "import-capabilities") {
+      if (process.env["APIFY_ENABLED"] !== "true" || process.env["APIFY_CUSTOMER_IMPORTS_ENABLED"] !== "true") {
+        return { status: 200, jsonBody: { enabled: false, reason: "Instagram importing is not enabled.", reviewRequired: true }, headers: jsonHeaders };
+      }
+      const config = reviewedPipeline();
+      const budget = process.env["APIFY_BUDGET_MODE"] === "verified-free-stop" ? verifiedFreeStopBudget(config.reserveMicros) : null;
+      return { status: 200, jsonBody: { enabled: true, mode: budget ? "bounded-pilot" : "api-usage",
+        pilotExpiresAt: budget?.endsAt.toISOString() ?? null, globalUsageVisible: budget === null, reviewRequired: true }, headers: jsonHeaders };
+    }
     const oauth = await oauthRoute(request);
     if (oauth) return oauth;
     const principal = await authenticate(request.headers.get("authorization"));
