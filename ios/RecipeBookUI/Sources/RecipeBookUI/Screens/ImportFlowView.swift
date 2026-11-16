@@ -2,8 +2,8 @@
 import SwiftUI
 import RecipeBookPresentation
 
-// One inline import flow for every entry point (Share Sheet, Add Recipe › Paste Instagram Link,
-// and resuming an unfinished job from the Library). There is no separate Imports page; the job
+// One inline import flow for every in-app entry point (a shared link, Add Recipe › Paste Instagram
+// Link, and opening a pending import card inside a book). There is no separate Imports page; the job
 // lives on the server, so closing the sheet never loses progress, errors or source evidence.
 
 /// Where the import flow starts.
@@ -136,36 +136,30 @@ struct ReelImportFlowView: View {
 
     // MARK: Confirm
 
+    /// Pick the destination book, queue durably, then close: the import continues on the server
+    /// and shows up as a pending card inside that book.
+    @ViewBuilder
     private func confirm(_ url: URL) -> some View {
-        let valid = ReelLink.extract(from: url.absoluteString)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                ImportHeroCard(systemImage: "film", title: "Import this Reel?",
-                               message: valid == nil
-                                   ? "This isn’t a public Instagram Reel link, so it can’t be imported."
-                                   : "Recipe Book reads the Reel’s caption, comments and spoken audio to prepare a draft. You’ll check every ingredient and step before anything is saved.")
-                if let valid {
-                    Text(valid.absoluteString)
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                    WatchOnInstagramButton(url: valid, compact: true)
-                }
-            }
-            .padding(20)
-        }
-        .navigationTitle("Import from Instagram")
-        .bottomControlBar(isPresented: valid != nil) {
-            RunningButton(title: "Import Reel", systemImage: "square.and.arrow.down", isRunning: runner.isRunning) {
-                guard let valid else { return }
-                runner.run {
-                    let job = try await resolved.submitImport(url: valid)
+        if let valid = ReelLink.extract(from: url.absoluteString) {
+            let service = resolved
+            ReelDestinationForm(
+                url: valid,
+                preselectedBookID: preselectedBookID,
+                loadBooks: { try await service.books().filter { $0.storage == .account } },
+                createBook: { try await service.createBook(name: $0, kind: .personal) },
+                queue: { try await service.submitImport(url: valid, bookID: $0) },
+                onQueued: { job in
                     onSubmitted(job)
-                    phase = .tracking(job)
+                    close()
                 }
+            )
+        } else {
+            ContentUnavailableView {
+                Label("Not a Reel link", systemImage: "link.badge.plus")
+            } description: {
+                Text("This isn’t a public Instagram Reel link, so it can’t be imported.")
             }
-            .floatingPrimaryButtonStyle()
-            .controlSize(.large)
+            .navigationTitle("Import from Instagram")
         }
     }
 
@@ -218,7 +212,9 @@ struct ReelImportFlowView: View {
                             .disabled(runner.isRunning)
                     }
                 } else if job.status.isInFlight {
-                    Text("You can close this. The import keeps going and stays in your Library under “Imports in progress”.")
+                    Text(job.bookID == nil
+                         ? "You can close this. The import keeps going and stays in your Library under “Imports in progress”."
+                         : "You can close this, or the app. The import keeps going and waits inside its book for your review.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -254,9 +250,11 @@ struct ReelImportFlowView: View {
             async let draft = resolved.importReview(id: job.id)
             async let books = resolved.books()
             var reviewDraft = try await draft
-            // The destination is either the book the user started from, or chosen in review.
-            reviewDraft.bookID = preselectedBookID
+            // A job bound to a book at submit time keeps that destination. Older unbound jobs use the
+            // book the user started from, or one chosen in review.
+            reviewDraft.bookID = job.bookID ?? preselectedBookID
             phase = .review(job, reviewDraft, try await books)
+            if job.isUnseen { try? await resolved.markImportSeen(id: job.id) }
         } catch let error where !error.isCancellation {
             phase = .tracking(job)
             runner.errorMessage = error.localizedDescription
@@ -280,7 +278,8 @@ struct ReelImportFlowView: View {
                     .padding(.vertical, 10)
                     .background(RecipeBookTheme.warning.opacity(0.12))
             }
-            RecipeEditorView(title: "Review Recipe", draft: draft, destinationBooks: books.filter { $0.storage == .account },
+            RecipeEditorView(title: "Review Recipe", draft: draft,
+                             destinationBooks: job.bookID == nil ? books.filter { $0.storage == .account } : nil,
                              saveLabel: "Save Recipe", showsCancel: false) { reviewed in
                 try await resolved.approveImport(id: job.id, draft: reviewed)
             } onSaved: { saved in
@@ -291,7 +290,7 @@ struct ReelImportFlowView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Later") { close() }
-                    .accessibilityHint("Keeps the import for review from your Library")
+                    .accessibilityHint(job.bookID == nil ? "Keeps the import for review from your Library" : "Keeps the draft for review inside its book")
             }
             ToolbarItem(placement: .secondaryAction) {
                 Button("Discard Import", systemImage: "trash", role: .destructive) { confirmDiscard = true }
@@ -312,9 +311,9 @@ struct ReelImportFlowView: View {
     }
 }
 
-/// Kept for app-layer call sites: confirms a shared link and then continues in the same inline
-/// import flow. `onFinished` receives the submitted job (acknowledge the inbox entry then), or
-/// `nil` if the user cancelled before submitting.
+/// Kept for app-layer call sites: asks which book to save a shared link to, queues it with
+/// `submitImport(url:bookID:)` and closes. `onFinished` receives the queued job (acknowledge the
+/// inbox entry then), or `nil` if the user cancelled before submitting.
 @MainActor
 public struct ReelImportConfirmView: View {
     private let url: URL
@@ -336,25 +335,6 @@ public struct ReelImportConfirmView: View {
 }
 
 // MARK: - Pieces
-
-@MainActor
-private struct ImportHeroCard: View {
-    let systemImage: String
-    let title: String
-    let message: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(RecipeBookTheme.accent)
-                .accessibilityHidden(true)
-            Text(title).displayTitle(.title)
-            Text(message).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
 
 /// Status of one job with explicit stage wording.
 @MainActor

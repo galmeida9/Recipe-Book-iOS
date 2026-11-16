@@ -259,7 +259,7 @@ struct MainTabView: View {
                         // Keep the shared link: after sign-in the account tabs offer it for import.
                         GuestReelSheet(onChange: onChange) { incomingReel = nil }
                     } else {
-                        // Same inline progress/review flow as Add Recipe › Paste Instagram Link.
+                        // Same destination picker as the Share Extension: choose a book, queue, close.
                         ReelImportFlowView(start: .link(url), onClose: { incomingReel = nil })
                     }
                 }

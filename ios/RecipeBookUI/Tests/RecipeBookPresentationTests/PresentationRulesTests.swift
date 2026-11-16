@@ -299,4 +299,44 @@ final class PresentationRulesTests: XCTestCase {
             XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
         }
     }
+
+    func testBookImportActivityCountsOnlyBoundUnfinishedJobs() {
+        let url = URL(string: "https://www.instagram.com/reel/A/")!
+        func job(_ id: String, _ status: ImportStatus, book: BookID?, unseen: Bool = false) -> ImportJob {
+            ImportJob(id: id, sourceURL: url, status: status, createdAt: Date(), bookID: book, isUnseen: unseen)
+        }
+        let activity = BookImportActivity.byBook([
+            job("1", .queued, book: "a"),
+            job("2", .processing, book: "a"),
+            job("3", .reviewRequired, book: "a", unseen: true),
+            job("4", .reviewRequired, book: "a", unseen: false),
+            job("5", .failed(reason: "x", canRetry: false), book: "b"),
+            job("6", .completed(recipeID: "r", bookID: "c"), book: "c"),
+            job("7", .processing, book: nil),
+        ])
+        XCTAssertEqual(activity["a"], BookImportActivity(inProgress: 2, newReady: 1, failed: 0))
+        XCTAssertEqual(activity["b"], BookImportActivity(failed: 1))
+        XCTAssertNil(activity["c"], "Completed jobs don't badge a book")
+        XCTAssertEqual(activity.count, 2, "Unbound jobs aren't attributed to any book")
+        XCTAssertEqual(activity["a"]?.accessibilityText, "2 recipes importing, 1 new recipe to review")
+        XCTAssertNil(BookImportActivity().accessibilityText)
+    }
+
+    func testBookScopedImportDefaultsNeverSucceed() async {
+        let service = UnconfiguredRecipeBookService()
+        do {
+            _ = try await service.submitImport(url: URL(string: "https://www.instagram.com/reel/A/")!, bookID: "b")
+            XCTFail("Unconfigured service must not queue imports")
+        } catch {
+            XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
+        }
+        do {
+            try await service.markImportSeen(id: "j")
+            XCTFail("Unconfigured service must not acknowledge imports")
+        } catch {
+            XCTAssertEqual(error as? RecipeBookUIError, .serviceNotConfigured)
+        }
+        XCTAssertFalse(ImportJob(id: "j", sourceURL: URL(string: "https://www.instagram.com/reel/A/")!,
+                                 status: .reviewRequired, createdAt: Date()).isUnseen)
+    }
 }

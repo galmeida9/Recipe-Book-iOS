@@ -12,7 +12,7 @@ struct LibraryView: View {
     @State private var reload = 0
     @State private var showingCreate = false
     @State private var pendingSignIn = false
-    @State private var unfinishedImports: [ImportJob] = []
+    @State private var jobs: [ImportJob] = []
     @State private var resumingImport: ImportJob?
 
     var body: some View {
@@ -50,6 +50,16 @@ struct LibraryView: View {
                     .refreshable { await load() }
                 }
             }
+            // Inside the stack so it re-runs when returning from a book (seen drafts, new jobs).
+            .task(id: reload) {
+                await load()
+                // Keep book badges current while something is importing; stops when this disappears.
+                while !Task.isCancelled, accessMode == .account, jobs.contains(where: { $0.status.isInFlight }) {
+                    try? await Task.sleep(for: .seconds(5))
+                    guard !Task.isCancelled else { return }
+                    await loadJobs()
+                }
+            }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("Library")
             .toolbar {
@@ -68,7 +78,17 @@ struct LibraryView: View {
                 ReelImportFlowView(start: .job(job.id), onClose: { resumingImport = nil })
             }
         }
-        .task(id: reload) { await load() }
+    }
+
+    private var activity: [BookID: BookImportActivity] { BookImportActivity.byBook(jobs) }
+
+    /// Older imports that aren't bound to a book. Book-bound imports appear inside their book.
+    private var unfinishedImports: [ImportJob] {
+        jobs.filter { job in
+            guard job.bookID == nil else { return false }
+            if case .completed = job.status { return false }
+            return true
+        }
     }
 
     /// Unfinished Instagram imports (account only). The job lives on the server, so the user can
@@ -116,9 +136,10 @@ struct LibraryView: View {
                 let columns = typeSize.isAccessibilitySize
                     ? [GridItem(.flexible())]
                     : [GridItem(.adaptive(minimum: 160), spacing: 14)]
+                let activity = self.activity
                 LazyVGrid(columns: columns, spacing: 14) {
                     ForEach(books) { book in
-                        NavigationLink(value: book) { BookCover(book: book) }
+                        NavigationLink(value: book) { BookCover(book: book, imports: activity[book.id] ?? BookImportActivity()) }
                             .buttonStyle(.plain)
                     }
                 }
@@ -132,14 +153,13 @@ struct LibraryView: View {
         } catch let error where !error.isCancellation {
             state = .failed(error.localizedDescription)
         } catch {}
-        guard accessMode == .account else { unfinishedImports = []; return }
+        await loadJobs()
+    }
+
+    private func loadJobs() async {
+        guard accessMode == .account else { jobs = []; return }
         // Secondary content: a failure here shouldn't block the library.
-        if let jobs = try? await service.importJobs() {
-            unfinishedImports = jobs.filter {
-                if case .completed = $0.status { return false }
-                return true
-            }
-        }
+        if let latest = try? await service.importJobs() { jobs = latest }
     }
 }
 
@@ -147,6 +167,7 @@ struct LibraryView: View {
 @MainActor
 struct BookCover: View {
     let book: BookSummary
+    var imports = BookImportActivity()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -156,6 +177,9 @@ struct BookCover: View {
                     .frame(height: 120)
                     .frame(maxWidth: .infinity)
                     .clipped()
+                    .overlay(alignment: .topTrailing) {
+                        ImportActivityBadge(activity: imports).padding(8)
+                    }
                 HStack(spacing: 6) {
                     if book.kind == .shared {
                         Label("Shared", systemImage: "person.2.fill")
@@ -190,7 +214,7 @@ struct BookCover: View {
         .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(book.name), \(book.kind == .shared ? "shared book" : "personal book")\(book.storage == .onDevice ? ", on this iPhone" : ""), \(book.recipeCount) recipes")
+        .accessibilityLabel("\(book.name), \(book.kind == .shared ? "shared book" : "personal book")\(book.storage == .onDevice ? ", on this iPhone" : ""), \(book.recipeCount) recipes\(imports.accessibilityText.map { ", \($0)" } ?? "")")
         .accessibilityHint(book.myRole == .owner && book.kind == .shared ? "You are an owner" : "")
     }
 
@@ -201,6 +225,43 @@ struct BookCover: View {
         }
         if book.storage == .onDevice { parts.append("On this iPhone") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Book cover corner badge: a spinner while Reels import into the book, otherwise the number of
+/// new drafts waiting for review, or a failure marker. Hidden when there's no activity.
+@MainActor
+struct ImportActivityBadge: View {
+    let activity: BookImportActivity
+
+    var body: some View {
+        Group {
+            if activity.inProgress > 0 {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text(activity.inProgress == 1 ? "Importing" : "Importing \(activity.inProgress)")
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(.regularMaterial, in: Capsule())
+            } else if activity.newReady > 0 {
+                Label("\(activity.newReady) new", systemImage: "sparkles")
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RecipeBookTheme.accent, in: Capsule())
+            } else if activity.failed > 0 {
+                Label("Import failed", systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.white)
+                    .padding(6)
+                    .background(Color.red, in: Circle())
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .shadow(color: .black.opacity(0.15), radius: 3, y: 1)
+        .accessibilityHidden(true)
     }
 }
 
@@ -294,6 +355,9 @@ struct BookView: View {
     @State private var showingEditor = false
     @State private var showingAddChoice = false
     @State private var showingImport = false
+    @State private var imports: [ImportJob] = []
+    @State private var openingImport: ImportJob?
+    @State private var importPendingDiscard: ImportJob?
     @State private var showingLeave = false
     @State private var confirmDeleteBook = false
     @State private var recipePendingDelete: RecipeSummary?
@@ -309,7 +373,15 @@ struct BookView: View {
             content(book)
         }
         .navigationTitle(state.value?.summary.name ?? summary.name)
-        .task(id: reload) { await load() }
+        .task(id: reload) {
+            await load()
+            // Pending import cards update while the server works; stops when the book closes.
+            while !Task.isCancelled, imports.contains(where: { $0.status.isInFlight }) {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await loadImports()
+            }
+        }
         .errorAlert($runner.errorMessage)
     }
 
@@ -361,8 +433,32 @@ struct BookView: View {
                 }
             }
 
+            if !imports.isEmpty {
+                Section {
+                    ForEach(imports) { job in
+                        PendingImportCard(job: job, isRunning: runner.isRunning,
+                                          onReview: { openingImport = job },
+                                          onRetry: {
+                                              runner.run {
+                                                  _ = try await service.retryImport(id: job.id)
+                                                  reload += 1
+                                              }
+                                          },
+                                          onDiscard: { importPendingDiscard = job })
+                    }
+                } header: {
+                    Text("From Instagram")
+                } footer: {
+                    Text("Imports keep going with the app closed. Nothing is added to the book until you review and save it.")
+                }
+            }
+
             Section("Recipes") {
-                if book.recipes.isEmpty {
+                if book.recipes.isEmpty && !imports.isEmpty {
+                    Text("Reviewed imports and recipes you write appear here.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else if book.recipes.isEmpty {
                     ContentUnavailableView {
                         Label("No recipes yet", systemImage: "fork.knife")
                     } description: {
@@ -414,6 +510,23 @@ struct BookView: View {
             ReelImportFlowView(start: .paste,
                                preselectedBookID: book.summary.storage == .account ? book.id : nil,
                                onClose: { showingImport = false })
+        }
+        .sheet(item: $openingImport, onDismiss: { reload += 1 }) { job in
+            ReelImportFlowView(start: .job(job.id), preselectedBookID: book.id, onClose: { openingImport = nil })
+        }
+        .confirmationDialog("Discard this import?",
+                            isPresented: Binding(get: { importPendingDiscard != nil },
+                                                 set: { if !$0 { importPendingDiscard = nil } }),
+                            titleVisibility: .visible) {
+            Button("Discard Import", role: .destructive) {
+                guard let job = importPendingDiscard else { return }
+                runner.run {
+                    try await service.discardImport(id: job.id)
+                    reload += 1
+                }
+            }
+        } message: {
+            Text("The draft and its source text will be removed. The Reel stays on Instagram.")
         }
         .sheet(isPresented: $showingEditor) {
             NavigationStack {
@@ -481,6 +594,139 @@ struct BookView: View {
                 runner.errorMessage = error.localizedDescription
             }
         } catch {}
+        await loadImports()
+        // Opening the book acknowledges its new drafts. Persisted by the service; the cards stay
+        // until each draft is saved or discarded, and the Library badge updates from the server.
+        for job in imports where job.status == .reviewRequired && job.isUnseen {
+            try? await service.markImportSeen(id: job.id)
+        }
+    }
+
+    private func loadImports() async {
+        guard accessMode == .account, summary.storage == .account else { imports = []; return }
+        // Secondary content: a failure here shouldn't block the book.
+        guard let jobs = try? await service.importJobs() else { return }
+        imports = jobs.filter { job in
+            guard job.bookID == summary.id else { return false }
+            if case .completed = job.status { return false }
+            return true
+        }
+    }
+}
+
+/// A Reel importing into this book: a placeholder card with the backend's stage while it works,
+/// then the draft to review, or the failure reason with Retry / Discard.
+@MainActor
+struct PendingImportCard: View {
+    let job: ImportJob
+    let isRunning: Bool
+    let onReview: () -> Void
+    let onRetry: () -> Void
+    let onDiscard: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                ZStack {
+                    CoverImage(image: job.thumbnail, seed: job.id, symbol: "play.rectangle.fill")
+                    if job.status.isInFlight {
+                        Color.black.opacity(0.3)
+                        ProgressView().tint(.white)
+                    }
+                }
+                .frame(width: 72, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(job.status.title)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(color)
+                        if job.status == .reviewRequired && job.isUnseen {
+                            Text("New")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(RecipeBookTheme.accent, in: Capsule())
+                        }
+                    }
+                    if let title = job.titleHint {
+                        Text(title)
+                            .font(.system(.body, design: .serif).weight(.semibold))
+                            .lineLimit(2)
+                    } else if job.status.isInFlight {
+                        // Placeholder for the recipe that is still being read.
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(.quaternary)
+                            .frame(width: 150, height: 14)
+                            .accessibilityHidden(true)
+                    } else {
+                        Text("Instagram Reel")
+                            .font(.system(.body, design: .serif).weight(.semibold))
+                    }
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+
+            actions
+        }
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        switch job.status {
+        case .reviewRequired:
+            Button(action: onReview) {
+                Label("Review Recipe", systemImage: "checklist").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isRunning)
+        case .failed(_, let canRetry):
+            HStack(spacing: 10) {
+                if canRetry {
+                    Button(action: onRetry) {
+                        Label("Try Again", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                Button(role: .destructive, action: onDiscard) {
+                    Text("Discard").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+            .disabled(isRunning)
+        case .queued, .processing:
+            WatchOnInstagramButton(url: job.sourceURL, compact: true)
+        case .completed:
+            EmptyView()
+        }
+    }
+
+    private var detail: String {
+        switch job.status {
+        case .queued: return job.stageDetail ?? "Waiting to start. You can close the app."
+        case .processing: return job.stageDetail ?? "Reading the caption, comments and spoken audio."
+        case .reviewRequired: return "Draft ready. Check the ingredients and steps before it’s saved."
+        case .failed(let reason, _): return reason
+        case .completed: return "Saved."
+        }
+    }
+
+    private var color: Color {
+        switch job.status {
+        case .reviewRequired: return RecipeBookTheme.accent
+        case .failed: return .red
+        case .completed: return RecipeBookTheme.success
+        case .queued, .processing: return .secondary
+        }
     }
 }
 

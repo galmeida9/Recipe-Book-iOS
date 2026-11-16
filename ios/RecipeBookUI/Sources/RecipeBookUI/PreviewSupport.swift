@@ -52,11 +52,15 @@ actor PreviewRecipeBookService: RecipeBookService {
                        currentUserID: me.id, recipes: [], members: [meMember]),
         ]
         jobs = [
+            ImportJob(id: "j3", sourceURL: URL(string: "https://www.instagram.com/reel/PREVIEW3/")!,
+                      status: .processing, createdAt: Date().addingTimeInterval(-120),
+                      bookID: "b1", stageDetail: "Preview: transcribing the spoken audio"),
             ImportJob(id: "j1", sourceURL: URL(string: "https://www.instagram.com/reel/PREVIEW1/")!,
-                      status: .reviewRequired, createdAt: Date().addingTimeInterval(-600), titleHint: "Crispy chickpeas"),
+                      status: .reviewRequired, createdAt: Date().addingTimeInterval(-600), titleHint: "Crispy chickpeas",
+                      bookID: "b1", isUnseen: true),
             ImportJob(id: "j2", sourceURL: URL(string: "https://www.instagram.com/reel/PREVIEW2/")!,
                       status: .failed(reason: "Preview: the Reel could not be read.", canRetry: true),
-                      createdAt: Date().addingTimeInterval(-3600)),
+                      createdAt: Date().addingTimeInterval(-3600), bookID: "b2"),
         ]
         lists = [ShoppingList(id: "l1", name: "Weekend", items: [
             ShoppingItem(id: "si1", name: "Tomatoes", quantity: "1", unit: "kg", sourceRecipeTitle: "Roasted Tomato Soup"),
@@ -233,6 +237,15 @@ actor PreviewRecipeBookService: RecipeBookService {
         return jobs[i]
     }
     func discardImport(id: ImportJobID) async throws { jobs.removeAll { $0.id == id } }
+    func submitImport(url: URL, bookID: BookID) async throws -> ImportJob {
+        try requireLive("Reel import")
+        let job = ImportJob(id: UUID().uuidString, sourceURL: url, status: .queued, createdAt: Date(), bookID: bookID)
+        jobs.insert(job, at: 0)
+        return job
+    }
+    func markImportSeen(id: ImportJobID) async throws {
+        if let i = jobs.firstIndex(where: { $0.id == id }) { jobs[i].isUnseen = false }
+    }
 
     func shoppingLists() async throws -> [ShoppingListSummary] { lists.map(summary(of:)) }
     func shoppingList(id: ShoppingListID) async throws -> ShoppingList {
@@ -353,6 +366,19 @@ actor PreviewRecipeBookService: RecipeBookService {
 #Preview("Plan") {
     PlanView()
         .environment(\.recipeBookService, PreviewRecipeBookService())
+}
+
+/// Preview-only adapter so the share sheet can be previewed; the extension uses the app layer's real one.
+private struct PreviewReelShareService: ReelShareService {
+    let base = PreviewRecipeBookService()
+    func shareDestinations() async throws -> [BookSummary] { try await base.books().filter { $0.storage == .account } }
+    func createBook(name: String) async throws -> BookSummary { try await base.createBook(name: name, kind: .personal) }
+    func queueImport(url: URL, bookID: BookID) async throws -> ImportJob { try await base.submitImport(url: url, bookID: bookID) }
+}
+
+#Preview("Share Reel to book") {
+    ShareReelDestinationView(sharedText: "Look at this https://www.instagram.com/reel/PREVIEW9/?igsh=abc",
+                             service: PreviewReelShareService(), onQueued: { _ in }, onCancel: {})
 }
 
 #Preview("Unconfigured service") {

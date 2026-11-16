@@ -438,13 +438,69 @@ public struct ImportJob: Equatable, Sendable, Identifiable {
     public var status: ImportStatus
     public var createdAt: Date
     public var titleHint: String?
+    /// Destination book chosen when the Reel was shared or pasted. `nil` only for older jobs.
+    public var bookID: BookID?
+    /// Backend-reported stage text (e.g. "Transcribing audio"). Display only; `nil` shows a generic label.
+    public var stageDetail: String?
+    /// Reel cover fetched by the backend, if any.
+    public var thumbnail: ImageRef?
+    /// Set by the backend when a draft becomes ready; cleared (persisted) by `markImportSeen`.
+    /// Drives the book's "new" badge count.
+    public var isUnseen: Bool
 
-    public init(id: ImportJobID, sourceURL: URL, status: ImportStatus, createdAt: Date, titleHint: String? = nil) {
+    public init(id: ImportJobID, sourceURL: URL, status: ImportStatus, createdAt: Date, titleHint: String? = nil,
+                bookID: BookID? = nil, stageDetail: String? = nil, thumbnail: ImageRef? = nil, isUnseen: Bool = false) {
         self.id = id
         self.sourceURL = sourceURL
         self.status = status
         self.createdAt = createdAt
         self.titleHint = titleHint
+        self.bookID = bookID
+        self.stageDetail = stageDetail
+        self.thumbnail = thumbnail
+        self.isUnseen = isUnseen
+    }
+}
+
+/// Import activity for one book, derived from that book's real jobs.
+public struct BookImportActivity: Equatable, Sendable {
+    public var inProgress: Int
+    /// Drafts ready for review that the user hasn't seen yet (`isUnseen`).
+    public var newReady: Int
+    public var failed: Int
+
+    public init(inProgress: Int = 0, newReady: Int = 0, failed: Int = 0) {
+        self.inProgress = inProgress
+        self.newReady = newReady
+        self.failed = failed
+    }
+
+    public var isEmpty: Bool { inProgress == 0 && newReady == 0 && failed == 0 }
+
+    /// Groups jobs by destination book. Jobs without a destination and completed jobs are ignored.
+    public static func byBook(_ jobs: [ImportJob]) -> [BookID: BookImportActivity] {
+        var result: [BookID: BookImportActivity] = [:]
+        for job in jobs {
+            guard let bookID = job.bookID else { continue }
+            var activity = result[bookID] ?? BookImportActivity()
+            switch job.status {
+            case .queued, .processing: activity.inProgress += 1
+            case .reviewRequired where job.isUnseen: activity.newReady += 1
+            case .failed: activity.failed += 1
+            case .reviewRequired, .completed: break
+            }
+            result[bookID] = activity
+        }
+        return result.filter { !$0.value.isEmpty }
+    }
+
+    /// Short, VoiceOver-friendly description, or `nil` when there's nothing to say.
+    public var accessibilityText: String? {
+        var parts: [String] = []
+        if inProgress > 0 { parts.append(inProgress == 1 ? "1 recipe importing" : "\(inProgress) recipes importing") }
+        if newReady > 0 { parts.append(newReady == 1 ? "1 new recipe to review" : "\(newReady) new recipes to review") }
+        if failed > 0 { parts.append(failed == 1 ? "1 import failed" : "\(failed) imports failed") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 }
 

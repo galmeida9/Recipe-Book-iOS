@@ -52,7 +52,12 @@ public protocol RecipeBookService: Sendable {
     func approveImport(id: ImportJobID, draft: RecipeDraft) async throws -> RecipeDetail
     func retryImport(id: ImportJobID) async throws -> ImportJob
     func discardImport(id: ImportJobID) async throws
-
+    /// Queues a Reel import into an explicitly chosen book. Returns only once the job is durably
+    /// queued server-side; processing continues with the app closed. Default throws.
+    func submitImport(url: URL, bookID: BookID) async throws -> ImportJob
+    /// Persists that the user opened a job's result (clears the book's "new" badge). Default throws;
+    /// the UI ignores failures here.
+    func markImportSeen(id: ImportJobID) async throws
     // MARK: Personal shopping lists
     func shoppingLists() async throws -> [ShoppingListSummary]
     func shoppingList(id: ShoppingListID) async throws -> ShoppingList
@@ -109,6 +114,23 @@ public extension RecipeBookService {
     func replacePlanDay(bookID: BookID, weekStart: PlanDate, date: PlanDate, replacement: PlanReplacement?,
                         planVersion: Int) async throws -> WeeklyPlan { throw RecipeBookUIError.serviceNotConfigured }
     func deleteWeek(bookID: BookID, weekStart: PlanDate, planVersion: Int) async throws { throw RecipeBookUIError.serviceNotConfigured }
+}
+
+/// Book-scoped imports. Defaults throw until the app layer binds jobs to destination books.
+public extension RecipeBookService {
+    func submitImport(url: URL, bookID: BookID) async throws -> ImportJob { throw RecipeBookUIError.serviceNotConfigured }
+    func markImportSeen(id: ImportJobID) async throws { throw RecipeBookUIError.serviceNotConfigured }
+}
+
+/// The narrow surface the Share Extension needs. Implemented by the app layer over the shared
+/// (Keychain) credentials; throw `RecipeBookUIError.signInRequired(.importing)` when there is no
+/// Google session. Never report success before the server has durably queued the import.
+public protocol ReelShareService: Sendable {
+    /// Account books the user may add recipes to.
+    func shareDestinations() async throws -> [BookSummary]
+    /// Creates a personal account book.
+    func createBook(name: String) async throws -> BookSummary
+    func queueImport(url: URL, bookID: BookID) async throws -> ImportJob
 }
 
 public enum RecipeBookUIError: LocalizedError, Equatable, Sendable {
