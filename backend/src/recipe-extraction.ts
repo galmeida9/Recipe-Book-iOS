@@ -55,7 +55,7 @@ export function extractionInput(sourceURL: string, evidence: Evidence): { source
   for (const comment of evidence.comments.slice(0, 20)) {
     // Commenter identity/links are not inference inputs; only cooking-bearing
     // public comments survive. This filter is not a prompt-injection guarantee.
-    if (/\b(?:ignore|system|prompt|instruction|review\s*[:=]|https?:|subscribe|follow|discount|buy now)\b/i.test(comment)) continue;
+    if (/\b(?:ignore|system|prompt|instructions?|subscribe|follow|discount|buy now)\b|\breview\s*[:=]|https?:\/\/|www\.|@/i.test(comment)) continue;
     if (/\b(?:ingredients?|minutes?|grams?|cups?|tablespoons?|teaspoons?|bake|boil|mix|refrigerat|freez)/i.test(comment)) append("comment", "M", comment);
   }
   const parsed = sourcesSchema.parse(sources);
