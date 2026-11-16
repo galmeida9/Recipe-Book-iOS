@@ -107,15 +107,18 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
   let sharedId = "";
   const budgetMonth = "t" + randomUUID().slice(0, 6);
   const retryBudgetMonth = "r" + randomUUID().slice(0, 6);
+  const ambiguousBudgetMonth = "a" + randomUUID().slice(0, 6);
   let activeBudgetMonth = budgetMonth;
   let starts = 0;
   let succeeded = false;
+  let lostResponse = false;
   class FixtureProvider extends ImportPipelineProvider {
     override async budget(): Promise<ProviderBudget> {
       return { month: activeBudgetMonth, spentMicros: 0, capMicros: 250_000, reserveMicros: 100_000, endsAt: new Date(Date.now() + 3_600_000) };
     }
     override async startStage(_sourceURL: string, pipeline: Pipeline): Promise<ProviderRun> {
       starts++;
+      if (lostResponse) throw new Error("Synthetic charged POST response was lost");
       await new Promise(resolve => setTimeout(resolve, 50));
       return { id: "fixture-" + pipeline.stage, status: "RUNNING", defaultDatasetId: "fixture-dataset", options: { maxTotalChargeUsd: 0.04, isMaxTotalChargeUsdSetByUser: true } };
     }
@@ -279,6 +282,28 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
     const retryBudget = await serializable(transaction => query<{ spent: number; reserved: number }>(transaction,
       "SELECT SpentMicros AS spent,ReservedMicros AS reserved FROM dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth }));
     assert.deepEqual(retryBudget[0], { spent: 200_000, reserved: 0 });
+    activeBudgetMonth = ambiguousBudgetMonth;
+    const ambiguous = await imports.create({ sourceURL: "https://www.instagram.com/reel/AmbiguousAudio/" }, randomUUID());
+    await processImport(ambiguous.id, provider);
+    await processImport(ambiguous.id, provider);
+    lostResponse = true;
+    await assert.rejects(() => processImport(ambiguous.id, provider), /response was lost/);
+    lostResponse = false;
+    const ambiguousFailure = await imports.get(ambiguous.id);
+    assert.equal(ambiguousFailure.state, "failed");
+    const chargedStarts = starts;
+    await processImport(ambiguous.id, provider);
+    await assert.rejects(() => imports.retry(ambiguous.id, ambiguousFailure.version),
+      (error: unknown) => error instanceof AppError && error.code === "retry_unsafe");
+    assert.equal(starts, chargedStarts, "A lost second-stage POST is never charged again.");
+    const betweenStages = await imports.create({ sourceURL: "https://www.instagram.com/reel/ExpiredBetweenStages/" }, randomUUID());
+    await processImport(betweenStages.id, provider);
+    await processImport(betweenStages.id, provider);
+    await serializable(transaction => query(transaction, "UPDATE dbo.ImportJobs SET Deadline=@deadline WHERE Id=@id",
+      { id: betweenStages.id, deadline: new Date(Date.now() - 1000) }));
+    const expiredBetweenStages = await imports.get(betweenStages.id);
+    await assert.rejects(() => imports.retry(betweenStages.id, expiredBetweenStages.version),
+      (error: unknown) => error instanceof AppError && error.code === "retry_unsafe");
     const promoted = await alice.changeMember(shared.id, bobId, "owner", shared.version);
     assert.ok("version" in promoted);
     shared = (await alice.books()).find(book => book.id === shared.id)!;
@@ -310,6 +335,7 @@ test("SQL: member isolation, optimistic writes, last-owner race and account depa
       await query(transaction, "DELETE dbo.ImportJobs WHERE UserId IN(SELECT Id FROM dbo.Accounts WHERE Issuer=@issuer)", { issuer });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: budgetMonth });
       await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: retryBudgetMonth });
+      await query(transaction, "DELETE dbo.ImportBudget WHERE Month=@month", { month: ambiguousBudgetMonth });
       await query(transaction, "DELETE dbo.Accounts WHERE Issuer=@issuer", { issuer });
       await query(transaction, "DELETE dbo.AccessInvites WHERE Issuer=@issuer", { issuer });
     });
