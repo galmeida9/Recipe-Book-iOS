@@ -114,6 +114,21 @@ final class GoogleAuthTests: XCTestCase {
                 if mode == 2 { XCTAssertTrue(error is CancellationError) }
                 if mode == 3 { XCTAssertFalse(error is CancellationError) }
             }
+            func testDiscoveryTimeoutAndCancellationAreBoundedAndDoNotRetry() async throws {
+                let configuration = GoogleTokenNetworkPolicy.configuration(isExtension: false)
+                configuration.protocolClasses = [TokenTransportFixture.self]
+                let session = URLSession(configuration: configuration)
+                let api = try GoogleAuthConfiguration(apiBaseURL: URL(string: "https://token-transport.invalid/api")!)
+                for mode in [1, 2] {
+                    TokenTransportFixture.reset(mode: mode)
+                    do { _ = try await GoogleAuthDiscovery.load(configuration: api, session: session); XCTFail("Discovery failure must finish explicitly.") }
+                    catch {
+                        if mode == 1 { XCTAssertEqual((error as? APIError)?.code, "auth_transport_-1001") }
+                        else { XCTAssertTrue(error is CancellationError) }
+                    }
+                    XCTAssertEqual(TokenTransportFixture.requests, 1)
+                }
+            }
             XCTAssertEqual(TokenTransportFixture.requests, 1)
         }
     }

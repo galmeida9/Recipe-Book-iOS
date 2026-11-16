@@ -141,15 +141,39 @@ public final class GoogleAuth: AuthenticationSession {
 }
 
 @MainActor
+enum GoogleAuthDiscovery {
+    struct Configuration: Decodable { let clientID: String; let callbackURL: String }
+    static func load(configuration: GoogleAuthConfiguration, session: URLSession) async throws -> Configuration {
+        var request = URLRequest(url: configuration.apiBaseURL.appendingPathComponent("auth/google/config"))
+        request.timeoutInterval = 90
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch { throw GoogleTokenNetworkPolicy.mapped(error) }
+        try Task.checkCancellation()
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+            throw APIError(status: 503, code: "auth_configuration", message: "Recipe Book sign-in configuration is temporarily unavailable.")
+        }
+        let discovery = try JSONDecoder().decode(Configuration.self, from: data)
+        guard discovery.clientID.range(of: #"^\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$"#, options: .regularExpression) != nil,
+              discovery.callbackURL == configuration.callbackURL.absoluteString else {
+            throw APIError(status: 0, code: "auth_configuration", message: "The backend returned an invalid public sign-in configuration.")
+        }
+        return discovery
+    }
+}
+
+@MainActor
 private final class AppAuthDriver: GoogleSessionDriver {
     static weak var active: AppAuthDriver?
     var flow: (any OIDExternalUserAgentSession)?
     private let configuration: GoogleAuthConfiguration
     private let keychainService: String
+    private let discoverySession: URLSession
     private var state: OIDAuthState?
-    private struct Discovery: Decodable { let clientID: String; let callbackURL: String }
     init(configuration: GoogleAuthConfiguration) throws {
         self.configuration = configuration
+        discoverySession = URLSession(configuration: GoogleTokenNetworkPolicy.configuration(isExtension: false))
         SharedGoogleSession.configureNetworking()
         keychainService = (Bundle.main.bundleIdentifier ?? "RecipeBook") + ".web-oauth"
         var item: CFTypeRef?
@@ -169,15 +193,7 @@ private final class AppAuthDriver: GoogleSessionDriver {
     var hasStoredSession: Bool { state?.isAuthorized == true }
     var hasCurrentUser: Bool { state != nil }
     func signIn() async throws -> GoogleCredential {
-        let (data, response) = try await URLSession.shared.data(from: configuration.apiBaseURL.appendingPathComponent("auth/google/config"))
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
-            throw APIError(status: 0, code: "auth_configuration", message: "The app owner must configure Google sign-in on the backend before login is available.")
-        }
-        let discovery = try JSONDecoder().decode(Discovery.self, from: data)
-        guard discovery.clientID.range(of: #"^\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$"#, options: .regularExpression) != nil,
-              discovery.callbackURL == configuration.callbackURL.absoluteString else {
-            throw APIError(status: 0, code: "auth_configuration", message: "The backend returned an invalid public sign-in configuration.")
-        }
+        let discovery = try await GoogleAuthDiscovery.load(configuration: configuration, session: discoverySession)
         let service = OIDServiceConfiguration(authorizationEndpoint: configuration.apiBaseURL.appendingPathComponent("auth/google/authorize"),
                                               tokenEndpoint: configuration.apiBaseURL.appendingPathComponent("auth/google/token"))
         let request = OIDAuthorizationRequest(configuration: service, clientId: discovery.clientID, clientSecret: nil,
