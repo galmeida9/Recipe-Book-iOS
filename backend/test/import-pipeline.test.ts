@@ -26,6 +26,28 @@ test("production pipeline requires explicit account/data/pricing approval and re
   configure();
   assert.equal(approvedPipeline().reserveMicros, 30_000);
 });
+test("nonbillable preflight reads actual cycle usage with imports disabled but never enables a charged dispatch", async () => {
+  configure();
+  process.env["APIFY_ENABLED"] = "false";
+  const requests: string[] = [];
+  const provider = new ImportPipelineProvider(async (input, options) => {
+    requests.push(String(input));
+    assert.equal(options?.method, "GET");
+    const now = Date.now();
+    return Response.json({ data: {
+      usageCycle: { startAt: new Date(now - 3_600_000).toISOString(), endAt: new Date(now + 3_600_000).toISOString() },
+      totalUsageCreditsUsdAfterVolumeDiscount: 0.11
+    } });
+  });
+  const budget = await provider.preflightBudget();
+  assert.equal(budget.spentMicros, 110_000);
+  assert.equal(budget.reserveMicros, 30_000);
+  assert.equal(requests.length, 1);
+  assert(requests[0]!.endsWith("/users/me/usage/monthly"));
+  await assert.rejects(() => provider.budget(), /disabled/);
+  assert.equal(requests.length, 1);
+  process.env["APIFY_ENABLED"] = "true";
+});
 test("each stage pins actual actor/build/cap and disables expensive optional work, retries and model tools", async () => {
   configure();
   const stages: Pipeline["stage"][] = ["metadata", "audio", "model"];

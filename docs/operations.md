@@ -429,6 +429,20 @@ accessible book and retains the canonical original Instagram link.
 
 ## Required device gate
 
+The optional `IMPORT_RUNTIME_PROBE_ENABLED=true` workload proof is registered
+only as an Azure Functions **admin-key** endpoint at `_bootstrap/import`.
+It also requires the exact existing approved account in
+`IMPORT_RUNTIME_PROBE_ACCOUNT` and a persisted `IMPORT_RUNTIME_PROBE_KEY`.
+GET reads provider budget even while imports are off; POST accepts only
+`{"confirm":true}`, submits the fixed previously authorized public video through
+normal import reservation/queue logic, and reuses the same immutable key.
+`GET ?mode=status` reads only that journal's job. The sum of configured stage
+caps cannot exceed USD 0.08 for this proof. No app account is created, no recipe
+is automatically saved, no Google bearer is copied, and customer authentication
+is never bypassed on ordinary routes. Disable and remove the three probe settings
+after verification; never expose its administrative host key in a URL or logs.
+An operator workload proof is not on-device share/import/save acceptance.
+
 Before calling the app functional, verify an actual signed device build with:
 app and extension executables intact; authorized provisioning profiles for both
 bundle IDs; matching app-group entitlements owned by the team; valid signatures;

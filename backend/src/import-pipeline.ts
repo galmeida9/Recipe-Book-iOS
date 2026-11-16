@@ -20,8 +20,8 @@ const stageActors = {
   audio: "apple_yang~instagram-transcripts-scraper",
   model: "fayoussef~bulk-llm-runner"
 } as const;
-export function approvedPipeline() {
-  invariant(["APIFY_ENABLED", "APIFY_FREE_PLAN_VERIFIED", "APIFY_NO_OVERAGES_VERIFIED", "APIFY_ACCOUNT_EXCLUSIVE",
+export function reviewedPipeline() {
+  invariant(["APIFY_FREE_PLAN_VERIFIED", "APIFY_NO_OVERAGES_VERIFIED", "APIFY_ACCOUNT_EXCLUSIVE",
     "APIFY_PIPELINE_REVIEW_ACKNOWLEDGED", "APIFY_PIPELINE_PRICING_VERIFIED"].every(name => process.env[name] === "true"),
   503, "provider_not_approved", "Instagram imports are disabled until account limits and pricing are verified and the operator acknowledges the provider/data review.");
   const stages = Object.fromEntries(Object.keys(stageActors).map(key => {
@@ -36,8 +36,13 @@ export function approvedPipeline() {
   invariant(reserveMicros <= 1_000_000, 503, "configuration", "The entire three-stage import must be capped at USD 1 or less.");
   return { stages, reserveMicros };
 }
+export function approvedPipeline() {
+  invariant(process.env["APIFY_ENABLED"] === "true", 503, "provider_not_approved", "Instagram imports are disabled.");
+  return reviewedPipeline();
+}
 export class ImportPipelineProvider extends ApifyProvider {
   override async budget() { return this.usageBudget(approvedPipeline().reserveMicros); }
+  async preflightBudget() { return this.usageBudget(reviewedPipeline().reserveMicros); }
   async startStage(sourceURL: string, pipeline: Pipeline, reservation: number): Promise<ProviderRun> {
     const config = approvedPipeline();
     invariant(pipeline.configuration === configuration(), 503, "provider_changed", "The reviewed provider configuration changed; no new stage was charged.");
