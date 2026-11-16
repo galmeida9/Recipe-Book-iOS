@@ -173,7 +173,7 @@ private final class AppAuthDriver: GoogleSessionDriver {
     private var state: OIDAuthState?
     init(configuration: GoogleAuthConfiguration) throws {
         self.configuration = configuration
-        discoverySession = URLSession(configuration: GoogleTokenNetworkPolicy.configuration(isExtension: false))
+        discoverySession = .shared
         SharedGoogleSession.configureNetworking()
         keychainService = (Bundle.main.bundleIdentifier ?? "RecipeBook") + ".web-oauth"
         var item: CFTypeRef?
