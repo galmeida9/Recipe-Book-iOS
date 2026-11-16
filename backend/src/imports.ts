@@ -75,7 +75,14 @@ async function expireUndelivered(transaction: sql.Transaction, userId: string): 
 }
 
 export class ImportService {
-  constructor(private readonly service: RecipeBookService, private readonly provider = new ImportPipelineProvider()) {}
+  constructor(private readonly service: RecipeBookService, private readonly provider = new ImportPipelineProvider(),
+    private readonly admission: "customer" | "operator-proof" = "customer") {}
+  private requireAdmission() {
+    invariant(this.admission === "operator-proof"
+      ? process.env["IMPORT_RUNTIME_PROBE_ENABLED"] === "true"
+      : process.env["APIFY_CUSTOMER_IMPORTS_ENABLED"] === "true",
+    503, "imports_not_enabled", "Instagram importing is not enabled for customer requests yet.");
+  }
   list() {
     return this.service.execute(async (transaction, userId) => {
       await expireUndelivered(transaction, userId);
@@ -90,6 +97,7 @@ export class ImportService {
     });
   }
   async create(input: unknown, key: string) {
+    this.requireAdmission();
     const { sourceURL: raw } = z.object({ sourceURL: z.string().max(2048) }).strict().parse(input);
     const sourceURL = canonicalReelURL(raw);
     // Check persisted idempotency before making even uncharged provider calls.
@@ -133,6 +141,7 @@ export class ImportService {
     });
   }
   async retry(id: string, version: number) {
+    this.requireAdmission();
     const budget = await this.provider.budget();
     return this.service.execute(async (transaction, userId) => {
       const row = await getJob(transaction, id, userId);

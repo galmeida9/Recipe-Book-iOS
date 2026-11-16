@@ -36,7 +36,7 @@ export async function importRuntimeProbe(request: HttpRequest): Promise<HttpResp
       return rows[0];
     });
     const service = new RecipeBookService(owner);
-    const imports = new ImportService(service, provider);
+    const imports = new ImportService(service, provider, "operator-proof");
     if (request.method === "POST") {
       const input = await request.text();
       invariant(Buffer.byteLength(input) <= 100, 400, "probe_input", "Only the explicit proof confirmation is accepted.");
