@@ -11,11 +11,12 @@ final class LaunchTests: XCTestCase {
         XCTAssertFalse(app.buttons["Continue with Google"].exists)
     }
     @MainActor
-    func testUnconfiguredAppShowsExplicitSetupStateWithoutFixtureData() {
+    func testUnconfiguredAppOffersExplicitSignInOrGuestWithoutFixtureData() {
         let app = XCUIApplication()
         app.launch()
         XCTAssertFalse(app.alerts["Unable to read shared Reel"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.staticTexts["Service setup required"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Continue with Google"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Continue Without Signing In"].exists)
         XCTAssertFalse(app.alerts["Unable to read shared Reel"].exists)
         XCTAssertFalse(app.staticTexts["Preview Kitchen"].exists)
     }
