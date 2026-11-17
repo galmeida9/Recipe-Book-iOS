@@ -37,8 +37,16 @@ public struct RecipeBookRootView: View {
         .environment(\.recipeBookService, service)
         .tint(RecipeBookTheme.accent)
         .task(id: reload) {
+            // Render the last confirmed session at once; a paused or cold backend must not block launch.
+            if session.value == nil, let cached = await service.cachedSession() {
+                session = .loaded(cached)
+            }
+            let shown = session.value
             do {
-                session = .loaded(try await service.loadSession())
+                let fresh = try await service.loadSession()
+                // Don't override a state the user changed (e.g. signed out) while this was in flight.
+                guard session.value == shown else { return }
+                session = .loaded(fresh)
             } catch let error where !error.isCancellation {
                 // Never replace a signed-in app with an error screen.
                 if session.value == nil { session = .failed(error.localizedDescription) }

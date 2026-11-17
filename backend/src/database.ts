@@ -14,7 +14,8 @@ export function database(): Promise<sql.ConnectionPool> {
         options: clientId ? { clientId } : {}
       },
       options: { encrypt: true, trustServerCertificate: false, abortTransactionOnError: true },
-      pool: { max: 4, min: 0, idleTimeoutMillis: 10_000 },
+      // Keep idle connections while the instance is warm so each request skips TLS + Entra token setup.
+      pool: { max: 4, min: 0, idleTimeoutMillis: 300_000 },
       connectionTimeout: 60_000,
       requestTimeout: 30_000
     });

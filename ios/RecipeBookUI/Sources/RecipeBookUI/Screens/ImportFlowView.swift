@@ -146,6 +146,7 @@ struct ReelImportFlowView: View {
                 url: valid,
                 preselectedBookID: preselectedBookID,
                 loadBooks: { try await service.books().filter { $0.storage == .account } },
+                cachedBooks: { await service.cachedBooks()?.filter { $0.storage == .account } },
                 createBook: { try await service.createBook(name: $0, kind: .personal) },
                 queue: { try await service.submitImport(url: valid, bookID: $0) },
                 onQueued: { job in

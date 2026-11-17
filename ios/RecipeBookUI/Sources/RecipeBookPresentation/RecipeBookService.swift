@@ -17,6 +17,12 @@ public protocol RecipeBookService: Sendable {
     /// Default implementation throws (see extension below).
     func continueWithoutSignIn() async throws -> SessionState
 
+    // MARK: Last-known state (no network)
+    /// The session last confirmed on this device, so launch can render immediately while
+    /// `loadSession()` revalidates. `nil` when nothing usable is cached.
+    func cachedSession() async -> SessionState?
+    /// The book list last loaded on this device (same shape as `books()`), or `nil` if unknown.
+    func cachedBooks() async -> [BookSummary]?
     // MARK: Books & membership
     func books() async throws -> [BookSummary]
     func createBook(name: String, kind: BookKind) async throws -> BookSummary
@@ -102,6 +108,12 @@ public extension RecipeBookService {
     /// recipes into a new book of `kind` in the signed-in account (`.shared` when the user is sharing it).
     /// The on-device book is kept and never auto-migrated.
     func copyLocalBookToAccount(id: BookID, kind: BookKind) async throws -> BookSummary { throw RecipeBookUIError.serviceNotConfigured }
+}
+
+/// No device cache by default: screens fall back to waiting for the live load.
+public extension RecipeBookService {
+    func cachedSession() async -> SessionState? { nil }
+    func cachedBooks() async -> [BookSummary]? { nil }
 }
 
 /// Images and weekly planning. Default implementations throw until the app layer maps the real

@@ -156,10 +156,38 @@ final class GuestStore: @unchecked Sendable {
         let operation: LocalBookCopy
         var result: RecipeBookCore.Book?
     }
+    /// Last server-confirmed signed-in account and its book list, used only to render launch
+    /// immediately. The server still authorizes every request; this is never a source of truth.
+    struct AccountSnapshot: Codable, Equatable {
+        struct CachedBook: Codable, Equatable {
+            var id: String
+            var name: String
+            var kind: String
+            var role: String
+            var recipeCount: Int
+            var memberCount: Int
+            var coverImageID: String?
+
+            init(_ book: BookSummary) {
+                id = book.id; name = book.name; kind = book.kind.rawValue; role = book.myRole.rawValue
+                recipeCount = book.recipeCount; memberCount = book.memberCount; coverImageID = book.coverImage?.id
+            }
+            var summary: BookSummary? {
+                guard let kind = RecipeBookPresentation.BookKind(rawValue: kind), let role = MemberRole(rawValue: role) else { return nil }
+                return .init(id: id, name: name, kind: kind, myRole: role, recipeCount: recipeCount, memberCount: memberCount,
+                             storage: .account, coverImage: coverImageID.map(ImageRef.init(id:)))
+            }
+        }
+        var accountID: String
+        var displayName: String
+        var books: [CachedBook]?
+    }
     struct State: Codable {
         var schema = 1
         var identity = GuestStore.newID()
-        var mode: Mode = .none
+        var mode: Mode = .none {
+            didSet { if mode != .account { accountSnapshot = nil } }
+        }
         var books: [Book] = []
         var recipes: [Recipe] = []
         var lists: [List] = []
@@ -167,6 +195,7 @@ final class GuestStore: @unchecked Sendable {
         // Optional additive fields decode older envelopes without resetting any existing data.
         var storedPlans: [StoredPlanResult]?
         var imageBytes: [String: Data]?
+        var accountSnapshot: AccountSnapshot?
         var plans: [StoredPlanResult] {
             get { storedPlans ?? [] }
             set { storedPlans = newValue }

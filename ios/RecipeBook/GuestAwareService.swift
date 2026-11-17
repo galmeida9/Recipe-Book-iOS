@@ -63,9 +63,45 @@ actor GuestAwareService: RecipeBookService {
             if value == .signedOut {
                 try store.transaction { $0.mode = .none }
                 retireCloud()
+            } else {
+                remember(value)
             }
         }
         return session
+    }
+    /// Instant launch: the last confirmed signed-in account, without auth or network.
+    /// `loadSession()` still revalidates; the server authorizes every request regardless.
+    func cachedSession() async -> SessionState? {
+        guard let state = try? store.read() else { return nil }
+        switch state.mode {
+        case .none: return .signedOut
+        case .guest: return .guest
+        case .account:
+            guard let snapshot = state.accountSnapshot else { return nil }
+            let value = SessionState.signedIn(UserProfile(id: snapshot.accountID, displayName: snapshot.displayName))
+            // Lets cloud reads start at once instead of waiting for GET /account first.
+            if session == .signedOut { session = value }
+            return value
+        }
+    }
+    func cachedBooks() async -> [BookSummary]? {
+        guard let state = try? store.read(), state.mode == .account,
+              let cached = state.accountSnapshot?.books, let device = try? await local.books() else { return nil }
+        return device + cached.compactMap(\.summary)
+    }
+    private func remember(_ value: SessionState) {
+        try? store.transaction { state in
+            guard state.mode == .account, case .signedIn(let profile) = value else { state.accountSnapshot = nil; return }
+            let books = state.accountSnapshot?.accountID == profile.id ? state.accountSnapshot?.books : nil
+            state.accountSnapshot = .init(accountID: profile.id, displayName: profile.displayName, books: books)
+        }
+    }
+    private func rememberBooks(_ books: [BookSummary], epoch: Int) {
+        guard epoch == generation, case .signedIn(let profile) = session else { return }
+        try? store.transaction { state in
+            guard state.mode == .account, state.accountSnapshot?.accountID == profile.id else { return }
+            state.accountSnapshot?.books = books.filter { $0.storage == .account }.map(GuestStore.AccountSnapshot.CachedBook.init)
+        }
     }
     func continueWithoutSignIn() async throws -> SessionState {
         try store.transaction { $0.mode = .guest }
@@ -81,6 +117,7 @@ actor GuestAwareService: RecipeBookService {
         let result = try await service.signIn()
         guard epoch == generation else { throw CancellationError() }
         try store.transaction { $0.mode = result == .signedOut ? .none : .account }
+        remember(result)
         session = result
         return result
     }
@@ -90,6 +127,7 @@ actor GuestAwareService: RecipeBookService {
         let service = try await adapter()
         let result = try await service.completeSetup(displayName: displayName)
         guard epoch == generation else { throw CancellationError() }
+        remember(result)
         session = result
         return result
     }
@@ -136,7 +174,9 @@ actor GuestAwareService: RecipeBookService {
         try await requireLocalAccess()
         let device = try await local.books()
         if try store.read().mode == .guest { return device }
+        let epoch = generation
         let account = try await withCloud(.account) { try await $0.books() }
+        rememberBooks(account, epoch: epoch)
         return device + account
     }
     func createBook(name: String, kind: RecipeBookPresentation.BookKind) async throws -> BookSummary {

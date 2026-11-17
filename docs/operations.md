@@ -139,19 +139,37 @@ instance **per independently scaling function group** (HTTP and queue groups can
 each have an instance), with no always-ready instances. This is not an app-wide
 single-instance or monetary cap; subscription spending limits and import
 reservations remain mandatory. See the [Flex maximum-instance documentation](https://learn.microsoft.com/en-us/azure/azure-functions/flex-consumption-plan#maximum-instance-count-the-ceiling).
-SQL uses General Purpose serverless Gen5
-2 vCore/0.5 minimum/60-minute idle pause, private Blob containers, queues and a
-user-assigned managed identity. SQL explicitly sets `useFreeLimit=true` and
-`freeLimitExhaustionBehavior=AutoPause`; never omit these or fall back to
-`BillOverUsage`. The initial free tier has 100,000 vCore-seconds and 32 GiB data
-and backup allowances per month, with no SLA. Actual subscription capability
-must be verified, and the post-deployment properties must confirm both settings.
-The actual free offer rejected a 15-minute idle pause with `ProvisioningDisabled`
-and requires the default 60 minutes, even though general serverless capabilities
-advertise a 15-minute minimum. Database cold resume may take time; quota pauses are surfaced as unavailable,
-not invented successful reads/writes.
+SQL uses the **Basic** DTU tier (5 DTU, 2 GiB, about USD 5/month from the
+Visual Studio Enterprise credit, spending limit still On), plus private Blob
+containers, queues and a user-assigned managed identity. Basic never auto-pauses.
+The previous serverless free offer (`useFreeLimit=true`, 60-minute idle pause,
+the only delay the free offer accepted) made the first request after an idle hour
+wait 30–60 seconds for the database to resume, which showed as a stuck
+"Still loading…" at launch and when importing a Reel. The owner approved the paid
+tier on 2026-11-17 to remove that wait.
+
+Migrating the existing free database is two separate, ordered updates; Azure
+rejects combining free-offer removal with a tier change, and removal is
+permanent:
+
+```powershell
+az sql db update -g <rg> -s <sql-server> -n RecipeBook --use-free-limit false
+az sql db show   -g <rg> -s <sql-server> -n RecipeBook --query useFreeLimit   # must be false
+az sql db update -g <rg> -s <sql-server> -n RecipeBook --edition Basic --capacity 5 --max-size 2GB
+az sql db show   -g <rg> -s <sql-server> -n RecipeBook --query "{sku:currentServiceObjectiveName,pause:autoPauseDelay}"
+```
+
+Confirm used space is under 2 GiB first (`az sql db list-usages`). The API pool
+keeps idle SQL connections for five minutes so a warm instance doesn't repeat TLS
+and Entra token setup on every request.
+
+The app no longer blocks launch on the network: the last server-confirmed
+signed-in account and account book list are stored in the on-device store and
+rendered immediately, then revalidated. The snapshot is cleared whenever the
+device leaves account mode and is never reused across accounts; the server still
+authorizes every request.
 No always-ready Functions instances, Application Insights paid retention,
-automatic provider subscription, or paid upgrades are provisioned.
+automatic provider subscription, or other paid upgrades are provisioned.
 Template compilation does not prove subscription eligibility or deployment.
 
 Deployment prerequisites:

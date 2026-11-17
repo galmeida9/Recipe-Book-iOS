@@ -374,6 +374,42 @@ final class GuestServiceTests: XCTestCase {
         let retained = try await reopened.book(id: book.id)
         XCTAssertEqual(retained.summary.storage, .onDevice)
     }
+    func testCachedSessionAndBooksRenderWithoutCloudAndClearOnSignOutOrSwitch() async throws {
+        let directory = try directory()
+        let factory = GuestFactoryProbe()
+        let service = try service(directory, factory)
+        let none = await service.cachedSession()
+        XCTAssertEqual(none, .signedOut)
+        _ = try await service.signIn()
+        _ = try await service.books()
+
+        // Relaunch while the backend is unavailable: last confirmed state renders without any cloud call.
+        await factory.configure(failure: true)
+        let made = await factory.count
+        let reopened = try self.service(directory, factory)
+        let session = await reopened.cachedSession()
+        XCTAssertEqual(session, .signedIn(.init(id: "account-one", displayName: "account-one")))
+        let books = await reopened.cachedBooks()
+        XCTAssertEqual(books?.map(\.id), ["account-one-book"])
+        XCTAssertEqual(books?.first?.storage, .account)
+        let after = await factory.count
+        XCTAssertEqual(after, made)
+
+        // A different account never sees the previous account's cached books.
+        await factory.configure(accountID: "account-two")
+        _ = try await reopened.signIn()
+        let switched = await reopened.cachedBooks()
+        XCTAssertNil(switched)
+        let switchedSession = await reopened.cachedSession()
+        XCTAssertEqual(switchedSession, .signedIn(.init(id: "account-two", displayName: "account-two")))
+
+        try await reopened.signOut()
+        let signedOut = try self.service(directory, factory)
+        let cleared = await signedOut.cachedSession()
+        XCTAssertEqual(cleared, .signedOut)
+        let noBooks = await signedOut.cachedBooks()
+        XCTAssertNil(noBooks)
+    }
     func testNoAutomaticGuestFallbackForUnavailableCloudInviteOrSetup() async throws {
         let directory = try directory()
         let factory = GuestFactoryProbe()

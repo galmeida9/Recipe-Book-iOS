@@ -120,6 +120,7 @@ struct LibraryView: View {
     }
 
     private func load() async {
+        if state.value == nil, let cached = await service.cachedBooks() { state = .loaded(cached) }
         do {
             state = .loaded(try await service.books())
         } catch let error where !error.isCancellation {

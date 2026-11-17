@@ -25,14 +25,11 @@ resource database 'Microsoft.Sql/servers/databases@2023-08-01' = {
   parent: sqlServer
   name: 'RecipeBook'
   location: location
-  sku: { name: 'GP_S_Gen5', tier: 'GeneralPurpose', family: 'Gen5', capacity: 2 }
+  // Basic never auto-pauses. Serverless free-offer resume made the first request after idle take 30-60 s.
+  sku: { name: 'Basic', tier: 'Basic', capacity: 5 }
   properties: {
-    maxSizeBytes: 34359738368
-    minCapacity: json('0.5')
-    autoPauseDelay: 60
+    maxSizeBytes: 2147483648
     requestedBackupStorageRedundancy: 'Local'
-    useFreeLimit: true
-    freeLimitExhaustionBehavior: 'AutoPause'
   }
 }
 output sqlServerName string = sqlServer.name

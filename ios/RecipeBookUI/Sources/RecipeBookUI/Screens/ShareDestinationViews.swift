@@ -64,6 +64,8 @@ struct ReelDestinationForm: View {
     let url: URL
     var preselectedBookID: BookID?
     let loadBooks: () async throws -> [BookSummary]
+    /// Last-known destinations shown while `loadBooks` refreshes (never blocks on the network).
+    var cachedBooks: () async -> [BookSummary]? = { nil }
     let createBook: (String) async throws -> BookSummary
     let queue: (BookID) async throws -> ImportJob
     let onQueued: (ImportJob) -> Void
@@ -99,18 +101,28 @@ struct ReelDestinationForm: View {
     }
 
     private func load() async {
+        if state.value == nil, let cached = await cachedBooks(), !cached.isEmpty { show(cached) }
         do {
             let books = try await loadBooks()
-            state = .loaded(books)
-            if selection == nil {
-                selection = books.first(where: { $0.id == preselectedBookID })?.id ?? (books.count == 1 ? books[0].id : nil)
-            }
+            show(books)
             if books.isEmpty { creatingName = "" }
         } catch RecipeBookUIError.signInRequired(_) {
             needsSignIn = true
         } catch let error where !error.isCancellation {
-            state = .failed(error.localizedDescription)
+            // Keep cached destinations usable; queueing still goes through the server.
+            if state.value == nil { state = .failed(error.localizedDescription) }
         } catch {}
+    }
+
+    private func show(_ fetched: [BookSummary]) {
+        var books = fetched
+        // A refresh that started before the user created a book must not hide their selection.
+        if let current = selection, !books.contains(where: { $0.id == current }),
+           let kept = state.value?.first(where: { $0.id == current }) { books.append(kept) }
+        state = .loaded(books)
+        if selection == nil {
+            selection = books.first(where: { $0.id == preselectedBookID })?.id ?? (books.count == 1 ? books[0].id : nil)
+        }
     }
 
     private func form(_ books: [BookSummary]) -> some View {
